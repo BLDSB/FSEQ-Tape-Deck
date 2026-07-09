@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+fseq_tapedeck/clips/*
+!fseq_tapedeck/clips/.gitkeep
+fseq_tapedeck/exports/*
+!fseq_tapedeck/exports/.gitkeep
+project.json
