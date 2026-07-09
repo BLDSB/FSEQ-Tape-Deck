@@ -1,7 +1,178 @@
 <!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>FSEQ Tapedeck</title></head>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FSEQ Tapedeck</title>
+<link rel="stylesheet" href="style.css">
+</head>
 <body>
-<p>FSEQ Tapedeck API is running. UI coming in Phase 5.</p>
+
+<header class="app-header">
+  <h1>FSEQ Tapedeck</h1>
+  <div id="record-indicator" class="record-indicator hidden">
+    <span class="rec-dot"></span>
+    <span id="record-indicator-text">Recording…</span>
+  </div>
+</header>
+
+<main class="app-body">
+
+  <!-- Clip Library -->
+  <section class="panel clip-library">
+    <div class="panel-header">
+      <h2>Clip Library</h2>
+      <button id="btn-new-clip" class="btn btn-primary">Record New Clip</button>
+    </div>
+    <ul id="clip-list" class="clip-list"></ul>
+  </section>
+
+  <!-- Timeline -->
+  <section class="panel timeline-panel">
+    <div class="panel-header">
+      <h2>Timeline</h2>
+      <div class="timeline-zoom">
+        <button id="btn-zoom-out" class="btn btn-small">&minus;</button>
+        <button id="btn-zoom-in" class="btn btn-small">+</button>
+      </div>
+    </div>
+    <div class="timeline-scroll" id="timeline-scroll">
+      <div class="timeline-inner" id="timeline-inner">
+        <div class="timeline-ruler" id="timeline-ruler"></div>
+        <div class="timeline-track" id="timeline-track">
+          <div class="play-cursor" id="play-cursor"></div>
+        </div>
+        <div class="timeline-scrubber-row">
+          <input type="range" id="scrubber" class="scrubber" min="0" max="1000" value="0">
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Transport / Export -->
+  <section class="panel transport-panel">
+    <div class="panel-header">
+      <h2>Export</h2>
+    </div>
+    <div class="transport-form">
+      <label>
+        Output channels
+        <input type="number" id="export-channel-count" value="512" min="1" step="1">
+      </label>
+      <label>
+        Step time
+        <select id="export-step-ms">
+          <option value="20">20 ms (50 fps)</option>
+          <option value="25" selected>25 ms (40 fps)</option>
+          <option value="40">40 ms (25 fps)</option>
+          <option value="50">50 ms (20 fps)</option>
+        </select>
+      </label>
+      <button id="btn-export" class="btn btn-primary">Export…</button>
+    </div>
+    <h3 class="exports-heading">Exports</h3>
+    <ul id="exports-list" class="exports-list"></ul>
+  </section>
+
+</main>
+
+<!-- Record New Clip modal -->
+<div id="record-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <h2>Record New Clip</h2>
+    <label>
+      Name
+      <input type="text" id="record-name" placeholder="e.g. Cue 1">
+    </label>
+    <label>
+      Universes (comma-separated)
+      <input type="text" id="record-universes" placeholder="e.g. 1,2,3">
+    </label>
+    <label>
+      Protocol
+      <select id="record-protocol">
+        <option value="sacn" selected>sACN (E1.31)</option>
+        <option value="artnet">ArtNet</option>
+      </select>
+    </label>
+    <label>
+      Step time (ms)
+      <select id="record-step-ms">
+        <option value="20">20 ms (50 fps)</option>
+        <option value="25">25 ms (40 fps)</option>
+        <option value="40" selected>40 ms (25 fps)</option>
+        <option value="50">50 ms (20 fps)</option>
+      </select>
+    </label>
+    <div class="modal-error hidden" id="record-modal-error"></div>
+    <div class="modal-actions">
+      <button id="btn-cancel-record" class="btn">Cancel</button>
+      <button id="btn-start-record" class="btn btn-primary">Record</button>
+    </div>
+
+    <div id="recording-live" class="recording-live hidden">
+      <div class="recording-live-stats">
+        <span id="recording-frame-count">0</span> frames &middot;
+        <span id="recording-elapsed">0.0</span>s
+      </div>
+      <button id="btn-stop-record" class="btn btn-danger">Stop</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit placement modal -->
+<div id="edit-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <h2>Edit Placement</h2>
+    <label>
+      Start (ms)
+      <input type="number" id="edit-start-ms" min="0" step="1">
+    </label>
+    <label>
+      Fade in (ms)
+      <input type="number" id="edit-fade-in-ms" min="0" step="1">
+    </label>
+    <label>
+      Fade out (ms)
+      <input type="number" id="edit-fade-out-ms" min="0" step="1">
+    </label>
+    <label>
+      Trim start (ms)
+      <input type="number" id="edit-trim-start-ms" min="0" step="1">
+    </label>
+    <label>
+      Trim end (ms, blank = clip end)
+      <input type="number" id="edit-trim-end-ms" min="0" step="1">
+    </label>
+    <div class="modal-actions">
+      <button id="btn-cancel-edit" class="btn">Cancel</button>
+      <button id="btn-save-edit" class="btn btn-primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Export name prompt modal -->
+<div id="export-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <h2>Export Timeline</h2>
+    <label>
+      File name
+      <input type="text" id="export-name" placeholder="e.g. show-final">
+    </label>
+    <div class="modal-error hidden" id="export-modal-error"></div>
+    <div class="modal-actions">
+      <button id="btn-cancel-export" class="btn">Cancel</button>
+      <button id="btn-confirm-export" class="btn btn-primary">Export</button>
+    </div>
+  </div>
+</div>
+
+<!-- Context menu for timeline blocks -->
+<ul id="context-menu" class="context-menu hidden">
+  <li id="ctx-edit">Edit…</li>
+  <li id="ctx-remove">Remove</li>
+</ul>
+
+<script src="app.js"></script>
 </body>
 </html>

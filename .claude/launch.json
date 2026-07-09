@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "fseq-tapedeck",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["D:/Code/FSEQ Tapedeck/fseq_tapedeck/main.py"],
+      "port": 7979
+    }
+  ]
+}
