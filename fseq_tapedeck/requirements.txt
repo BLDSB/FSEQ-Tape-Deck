@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+sacn
+pyartnet
+numpy
