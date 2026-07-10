@@ -105,8 +105,18 @@ function renderClipList() {
     meta.className = "clip-meta";
     meta.textContent = `${formatDuration(clip.frame_count, clip.step_ms)} · ${clip.universes.length} universe(s)`;
 
+    const addBtn = document.createElement("button");
+    addBtn.className = "btn btn-small clip-add-btn";
+    addBtn.textContent = "+ Add to Timeline";
+    addBtn.title = "Add this clip to the end of the timeline";
+    addBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      addClipToTimeline(clip.clip_id, timelineEndMs());
+    });
+
     li.appendChild(name);
     li.appendChild(meta);
+    li.appendChild(addBtn);
 
     li.addEventListener("click", () => {
       state.selectedClipId = clip.clip_id;
@@ -243,32 +253,45 @@ function buildClipBlock(placement) {
 // Drag-and-drop from clip library onto the timeline
 // ---------------------------------------------------------------------------
 
+async function addClipToTimeline(clipId, startMs) {
+  try {
+    await api.post("/api/timeline/placements", {
+      clip_id: clipId,
+      start_ms: Math.max(0, Math.round(startMs)),
+      fade_in_ms: 0,
+      fade_out_ms: 0,
+      trim_start_ms: 0,
+      trim_end_ms: null,
+    });
+    await refreshTimeline();
+  } catch (err) {
+    alert(`Could not place clip: ${err.message}`);
+  }
+}
+
+// End of the last placement on the timeline (0 if the timeline is empty),
+// used as the default drop point for the "Add to Timeline" button.
+function timelineEndMs() {
+  let end = 0;
+  for (const p of state.timeline.placements) {
+    end = Math.max(end, p.start_ms + placementDurationMs(p));
+  }
+  return end;
+}
+
 function initTimelineDropTarget() {
   const track = document.getElementById("timeline-track");
   track.addEventListener("dragover", (e) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";
   });
-  track.addEventListener("drop", async (e) => {
+  track.addEventListener("drop", (e) => {
     e.preventDefault();
     const clipId = e.dataTransfer.getData("text/plain");
     if (!clipId) return;
     const rect = track.getBoundingClientRect();
     const offsetX = e.clientX - rect.left + track.scrollLeft;
-    const startMs = Math.max(0, Math.round(offsetX / pxPerMs()));
-    try {
-      await api.post("/api/timeline/placements", {
-        clip_id: clipId,
-        start_ms: startMs,
-        fade_in_ms: 0,
-        fade_out_ms: 0,
-        trim_start_ms: 0,
-        trim_end_ms: null,
-      });
-      await refreshTimeline();
-    } catch (err) {
-      alert(`Could not place clip: ${err.message}`);
-    }
+    addClipToTimeline(clipId, offsetX / pxPerMs());
   });
 }
 

@@ -38,6 +38,17 @@ def create_app() -> FastAPI:
     app.include_router(routes_mixer.router)
 
     if STATIC_DIR.exists():
+        # This is a locally-run tool that gets edited and re-launched often;
+        # without this, browsers can go a long time (heuristic freshness
+        # based on Last-Modified) before re-checking the UI files with the
+        # server, silently serving a stale HTML/JS/CSS after an update.
+        @app.middleware("http")
+        async def no_cache_static(request, call_next):
+            response = await call_next(request)
+            if request.url.path == "/" or not request.url.path.startswith("/api"):
+                response.headers["Cache-Control"] = "no-cache"
+            return response
+
         app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
     return app
