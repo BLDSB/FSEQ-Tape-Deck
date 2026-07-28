@@ -111,6 +111,16 @@
         <option value="50">50 ms (20 fps)</option>
       </select>
     </label>
+    <label>
+      Network interface (optional)
+      <input type="text" id="record-bind-address" list="record-bind-address-options" placeholder="Auto (0.0.0.0)">
+      <datalist id="record-bind-address-options"></datalist>
+    </label>
+    <p class="field-hint" id="record-bind-address-hint">
+      Leave blank unless your console's data isn't being received (common on
+      machines with a VPN active) &mdash; then pick the IP of the network
+      adapter your console is actually connected to.
+    </p>
     <div class="modal-error hidden" id="record-modal-error"></div>
     <div class="modal-actions">
       <button id="btn-cancel-record" class="btn">Cancel</button>

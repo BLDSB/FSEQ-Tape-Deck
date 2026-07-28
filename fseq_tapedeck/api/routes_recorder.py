@@ -1,9 +1,11 @@
 """REST endpoints: start/stop recording, recording status."""
 
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+
+from recorder import list_local_ipv4_addresses
 
 router = APIRouter(prefix="/api/record", tags=["recorder"])
 
@@ -13,6 +15,7 @@ class RecordStartRequest(BaseModel):
     universes: List[int]
     step_ms: int = 40
     protocol: Literal["sacn", "artnet"] = "sacn"
+    bind_address: Optional[str] = None
 
 
 @router.post("/start")
@@ -26,10 +29,22 @@ async def start_recording(body: RecordStartRequest, request: Request):
             universes=body.universes,
             step_ms=body.step_ms,
             protocol=body.protocol,
+            bind_address=body.bind_address,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return recorder.status()
+
+
+@router.get("/network-interfaces")
+async def network_interfaces():
+    """Candidate local IPv4 addresses to bind the listener to.
+
+    Useful on machines with multiple network adapters (VPNs, WSL, virtual
+    switches) where binding to 0.0.0.0 can join sACN multicast on the wrong
+    interface and silently miss a console's packets.
+    """
+    return {"addresses": list_local_ipv4_addresses()}
 
 
 @router.post("/stop")

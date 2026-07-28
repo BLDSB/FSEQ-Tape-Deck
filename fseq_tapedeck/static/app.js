@@ -503,16 +503,35 @@ function setRecordingFormVisible(visible) {
   document.getElementById("record-universes").parentElement.classList.toggle("hidden", !visible);
   document.getElementById("record-protocol").parentElement.classList.toggle("hidden", !visible);
   document.getElementById("record-step-ms").parentElement.classList.toggle("hidden", !visible);
+  document.getElementById("record-bind-address").parentElement.classList.toggle("hidden", !visible);
+  document.getElementById("record-bind-address-hint").classList.toggle("hidden", !visible);
   document.getElementById("btn-start-record").classList.toggle("hidden", !visible);
   document.getElementById("recording-live").classList.toggle("hidden", visible);
+}
+
+async function populateBindAddressOptions() {
+  const datalist = document.getElementById("record-bind-address-options");
+  try {
+    const data = await api.get("/api/record/network-interfaces");
+    datalist.innerHTML = "";
+    for (const addr of data.addresses) {
+      const option = document.createElement("option");
+      option.value = addr;
+      datalist.appendChild(option);
+    }
+  } catch (e) {
+    // non-essential convenience feature; the field still works as free text
+  }
 }
 
 function openRecordModal() {
   clearRecordError();
   document.getElementById("record-name").value = "";
   document.getElementById("record-universes").value = "";
+  document.getElementById("record-bind-address").value = "";
   setRecordingFormVisible(true);
   document.getElementById("record-modal").classList.remove("hidden");
+  populateBindAddressOptions();
 }
 
 function closeRecordModal() {
@@ -593,6 +612,7 @@ function initRecordModal() {
     const universes = parseUniverses(document.getElementById("record-universes").value);
     const protocol = document.getElementById("record-protocol").value;
     const stepMs = Number(document.getElementById("record-step-ms").value);
+    const bindAddress = document.getElementById("record-bind-address").value.trim() || null;
 
     if (!name) {
       showRecordError("Name is required.");
@@ -604,7 +624,13 @@ function initRecordModal() {
     }
 
     try {
-      await api.post("/api/record/start", { name, universes, step_ms: stepMs, protocol });
+      await api.post("/api/record/start", {
+        name,
+        universes,
+        step_ms: stepMs,
+        protocol,
+        bind_address: bindAddress,
+      });
       setRecordingFormVisible(false);
       startStatusPolling();
       startRecordMeterPolling();

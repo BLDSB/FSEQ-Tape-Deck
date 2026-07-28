@@ -444,6 +444,13 @@ input[type="text"], input[type="number"], select {
 
 .modal-error.hidden { display: none; }
 
+.field-hint {
+  color: var(--text-dim);
+  font-size: 10.5px;
+  line-height: 1.4;
+  margin: -4px 0 0 0;
+}
+
 .recording-live {
   display: flex;
   flex-direction: column;

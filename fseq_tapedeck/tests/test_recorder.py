@@ -19,6 +19,7 @@ from recorder import (
     SACNListener,
     UniverseBuffer,
     UNIVERSE_CHANNELS,
+    list_local_ipv4_addresses,
 )
 
 
@@ -99,6 +100,59 @@ def test_sacn_listener_receives_loopback_packets():
         listener.stop()
 
 
+def test_list_local_ipv4_addresses_excludes_loopback_and_link_local():
+    addresses = list_local_ipv4_addresses()
+    assert isinstance(addresses, list)
+    for ip in addresses:
+        assert not ip.startswith("127."), f"loopback address leaked through: {ip}"
+        assert not ip.startswith("169.254."), f"link-local address leaked through: {ip}"
+    print(f"OK: list_local_ipv4_addresses() -> {addresses} (loopback/link-local excluded)")
+
+
+def test_recorder_honors_explicit_bind_address():
+    """Regression check: passing an explicit bind_address (the fix for
+    multicast-on-the-wrong-interface on machines with multiple adapters)
+    must not break reception -- loopback should still work when bound
+    directly to 127.0.0.1."""
+
+    async def run():
+        recorder = Recorder(clips_dir=Path("_test_clips_tmp3"))
+        await recorder.start(
+            name="bind-address-test",
+            universes=[9],
+            step_ms=40,
+            protocol="sacn",
+            bind_address="127.0.0.1",
+        )
+        try:
+            sender = sacn.sACNsender(source_name="fseq-tapedeck-bind-test")
+            sender.start()
+            sender.activate_output(9)
+            sender[9].destination = "127.0.0.1"
+            sender[9].dmx_data = tuple([123] * 512)
+            try:
+                deadline = time.monotonic() + 5.0
+                frame = recorder.current_frame()
+                while (not frame or frame[(9 - 1) * UNIVERSE_CHANNELS] != 123) and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                    frame = recorder.current_frame()
+                assert frame[(9 - 1) * UNIVERSE_CHANNELS] == 123, (
+                    "no data received when explicitly bound to 127.0.0.1"
+                )
+            finally:
+                sender.stop()
+        finally:
+            await recorder.stop()
+
+        clip_path = recorder.clips_dir / f"{recorder.clip_id}.fseq"
+        clip_path.unlink()
+        (recorder.clips_dir / f"{recorder.clip_id}.json").unlink()
+        recorder.clips_dir.rmdir()
+
+    asyncio.run(run())
+    print("OK: Recorder.start(bind_address=...) receives data on the specified interface")
+
+
 def test_recorder_end_to_end_with_fake_source():
     """Drive the Recorder's write loop with synthetic buffer updates and
     verify the resulting FSEQ clip file is well-formed and captures data."""
@@ -176,6 +230,8 @@ if __name__ == "__main__":
     test_universe_buffer_holds_last_value()
     test_artnet_packet_parsing()
     test_sacn_listener_receives_loopback_packets()
+    test_list_local_ipv4_addresses_excludes_loopback_and_link_local()
+    test_recorder_honors_explicit_bind_address()
     test_recorder_end_to_end_with_fake_source()
     test_current_frame_reflects_live_buffer()
     print("\nAll recorder tests passed.")

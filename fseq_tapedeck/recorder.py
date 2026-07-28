@@ -30,6 +30,25 @@ ARTNET_OPCODE_DMX = 0x5000
 UNIVERSE_CHANNELS = 512
 
 
+def list_local_ipv4_addresses() -> List[str]:
+    """Best-effort list of this machine's non-loopback IPv4 addresses.
+
+    On Windows especially, binding a multicast receiver to "0.0.0.0" can
+    join the multicast group on the wrong network interface when multiple
+    adapters are active (VPNs, WSL, virtual switches, ...), silently
+    dropping a console's sACN packets. Offering the real interface IPs
+    lets a user pick the one the console actually lives on.
+    """
+    addresses = set()
+    try:
+        hostname = socket.gethostname()
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            addresses.add(info[4][0])
+    except socket.gaierror:
+        pass
+    return sorted(ip for ip in addresses if not ip.startswith("127.") and not ip.startswith("169.254."))
+
+
 class UniverseBuffer:
     """Thread-safe store of the latest 512-channel frame per universe.
 
@@ -86,10 +105,17 @@ class SACNListener:
             )
             try:
                 self._receiver.join_multicast(universe)
-            except Exception:
-                # Multicast join can fail depending on the network interface;
-                # unicast/broadcast sources still get through without it.
-                pass
+            except Exception as exc:
+                # Multicast join can fail depending on the network interface
+                # (common on Windows with multiple adapters/VPNs bound to
+                # "0.0.0.0"); unicast/broadcast sources still get through
+                # without it, so this is not fatal -- just surfaced for
+                # troubleshooting in the server console.
+                print(
+                    f"[sACN] multicast join failed for universe {universe}: {exc} "
+                    f"(unicast sources will still work; if your console sends "
+                    f"multicast, try setting a specific network interface IP)"
+                )
         self._receiver.start()
 
     def stop(self) -> None:
@@ -230,6 +256,7 @@ class Recorder:
         universes: List[int],
         step_ms: int = 40,
         protocol: str = "sacn",
+        bind_address: Optional[str] = None,
     ) -> None:
         if self._running:
             raise RuntimeError("a recording is already in progress")
@@ -246,11 +273,12 @@ class Recorder:
         self.channel_count = max(self.universes) * UNIVERSE_CHANNELS
         self.frame_count = 0
 
+        bind_address = bind_address or "0.0.0.0"
         self._buffer = UniverseBuffer(self.universes)
         if protocol == "sacn":
-            self._listener = SACNListener(self.universes, self._buffer)
+            self._listener = SACNListener(self.universes, self._buffer, bind_address=bind_address)
         elif protocol == "artnet":
-            self._listener = ArtNetListener(self.universes, self._buffer)
+            self._listener = ArtNetListener(self.universes, self._buffer, bind_address=bind_address)
         else:
             raise ValueError(f"unknown protocol: {protocol!r}")
         self._listener.start()
