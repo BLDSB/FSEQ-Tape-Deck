@@ -10,9 +10,19 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from clip_store import ClipNotFoundError
-from mixer import render_timeline
+from mixer import render_frame_at, render_timeline
 
 router = APIRouter(prefix="/api/timeline", tags=["mixer"])
+
+
+def _resolve_clip_paths(placements, clip_store):
+    clip_paths = {}
+    for clip_id in {p.clip_id for p in placements}:
+        try:
+            clip_paths[clip_id] = clip_store.get_clip_path(clip_id)
+        except ClipNotFoundError:
+            raise HTTPException(status_code=404, detail=f"no clip with id {clip_id!r}")
+    return clip_paths
 
 
 class AddPlacementRequest(BaseModel):
@@ -79,19 +89,32 @@ async def remove_placement(placement_id: str, request: Request):
     return {"deleted": placement_id}
 
 
+@router.get("/frame")
+async def get_frame_at(t_ms: float, request: Request, channel_count: Optional[int] = None):
+    """A single HTP-merged, fade-scaled frame at time t_ms -- used to drive
+    live timeline playback/scrubbing preview without generating a file."""
+    timeline = request.app.state.timeline
+    clip_store = request.app.state.clip_store
+
+    cc = channel_count if channel_count is not None else timeline.settings.get("channel_count", 512)
+    clip_paths = _resolve_clip_paths(timeline.placements, clip_store)
+
+    frame_bytes = render_frame_at(
+        placements=timeline.placements,
+        clip_paths=clip_paths,
+        channel_count=cc,
+        t_ms=max(0.0, t_ms),
+    )
+    return {"t_ms": t_ms, "channels": list(frame_bytes)}
+
+
 @router.post("/export")
 async def export_timeline(body: ExportRequest, request: Request):
     timeline = request.app.state.timeline
     clip_store = request.app.state.clip_store
     exports_dir: Path = request.app.state.exports_dir
 
-    clip_ids = {p.clip_id for p in timeline.placements}
-    clip_paths = {}
-    for clip_id in clip_ids:
-        try:
-            clip_paths[clip_id] = clip_store.get_clip_path(clip_id)
-        except ClipNotFoundError:
-            raise HTTPException(status_code=404, detail=f"no clip with id {clip_id!r}")
+    clip_paths = _resolve_clip_paths(timeline.placements, clip_store)
 
     output_path = exports_dir / f"{body.name}.fseq"
     info = render_timeline(

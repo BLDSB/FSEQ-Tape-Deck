@@ -100,6 +100,19 @@ def test_full_api_flow():
             timeline = client.get("/api/timeline").json()
             assert len(timeline["placements"]) == 1
 
+            # --- Live frame preview (used for playback/scrubbing) ---
+            frame = client.get(
+                "/api/timeline/frame", params={"t_ms": 0, "channel_count": 512}
+            ).json()
+            assert frame["t_ms"] == 0
+            assert len(frame["channels"]) == 512
+            assert all(0 <= v <= 255 for v in frame["channels"])
+
+            far_frame = client.get(
+                "/api/timeline/frame", params={"t_ms": 999999, "channel_count": 512}
+            ).json()
+            assert all(v == 0 for v in far_frame["channels"])  # nothing active that far out
+
             # --- Export ---
             export = client.post(
                 "/api/timeline/export",

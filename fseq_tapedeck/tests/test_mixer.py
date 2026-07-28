@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fseq import FSEQReader, FSEQWriter
-from mixer import ClipPlacement, Timeline, fade_envelope, render_timeline
+from mixer import ClipPlacement, Timeline, fade_envelope, render_frame_at, render_timeline
 
 
 def make_constant_clip(path: Path, channel_count: int, step_ms: int, duration_s: float, value: int) -> None:
@@ -122,6 +122,47 @@ def test_htp_crossfade_render():
     print("OK: HTP merge + crossfade envelope math verified frame-by-frame on channel 0")
 
 
+def test_render_frame_at_matches_render_timeline():
+    """render_frame_at (used for live playback preview) must agree with
+    render_timeline's per-frame output -- it's the same merge logic, just
+    called on demand for one timestamp instead of writing a whole file."""
+    channel_count = 512
+    step_ms = 40
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        clip_a_path = tmp / "a.fseq"
+        clip_b_path = tmp / "b.fseq"
+        make_constant_clip(clip_a_path, channel_count, step_ms, duration_s=10, value=100)
+        make_constant_clip(clip_b_path, channel_count, step_ms, duration_s=10, value=220)
+
+        placement_a = ClipPlacement(clip_id="a", start_ms=0, fade_out_ms=1000)
+        placement_b = ClipPlacement(clip_id="b", start_ms=8000, fade_in_ms=1000)
+        placements = [placement_a, placement_b]
+        clip_paths = {"a": clip_a_path, "b": clip_b_path}
+
+        output_path = tmp / "out.fseq"
+        render_timeline(
+            placements=placements,
+            clip_paths=clip_paths,
+            channel_count=channel_count,
+            step_ms=step_ms,
+            output_path=output_path,
+        )
+
+        reader = FSEQReader(output_path)
+        try:
+            for t_ms in (0, 4000, 8000, 8480, 8760, 9000, 9500, 11000):
+                idx = max(0, min(reader.frame_count - 1, round(t_ms / step_ms)))
+                expected = reader.read_frame(idx)
+                actual = render_frame_at(placements, clip_paths, channel_count, idx * step_ms)
+                assert actual == expected, f"mismatch at t_ms={t_ms}: {actual[0]} != {expected[0]}"
+        finally:
+            reader.close()
+
+    print("OK: render_frame_at agrees with render_timeline's per-frame output")
+
+
 def test_timeline_persistence(tmp_path=None):
     import tempfile as _tempfile
 
@@ -153,5 +194,6 @@ def test_timeline_persistence(tmp_path=None):
 if __name__ == "__main__":
     test_fade_envelope_math()
     test_htp_crossfade_render()
+    test_render_frame_at_matches_render_timeline()
     test_timeline_persistence()
     print("\nAll mixer tests passed.")

@@ -116,6 +116,53 @@ def _placement_duration_ms(placement: ClipPlacement, clip_frame_count: int, clip
     return max(0, end_ms - placement.trim_start_ms)
 
 
+def _compute_windows(placements: List[ClipPlacement], readers: Dict[str, FSEQReader]):
+    """Each placement's active (placement, start_ms, duration_ms) window, plus
+    the overall timeline duration implied by them (0 if there are none)."""
+    windows = []
+    end_times_ms = [0]
+    for placement in placements:
+        reader = readers[placement.clip_id]
+        duration_ms = _placement_duration_ms(placement, reader.frame_count, reader.step_ms)
+        if duration_ms <= 0:
+            continue
+        windows.append((placement, placement.start_ms, duration_ms))
+        end_times_ms.append(placement.start_ms + duration_ms)
+    return windows, max(end_times_ms)
+
+
+def _compute_merged_frame(windows, readers: Dict[str, FSEQReader], channel_count: int, t_ms: float) -> np.ndarray:
+    """The single HTP-merged, fade-scaled frame active at t_ms."""
+    merged = np.zeros(channel_count, dtype=np.uint8)
+
+    for placement, start_ms, duration_ms in windows:
+        if not (start_ms <= t_ms < start_ms + duration_ms):
+            continue
+
+        reader = readers[placement.clip_id]
+        local_ms = t_ms - start_ms
+        source_ms = placement.trim_start_ms + local_ms
+        source_frame_idx = int(round(source_ms / reader.step_ms))
+        source_frame_idx = max(0, min(reader.frame_count - 1, source_frame_idx))
+
+        source_bytes = reader.read_frame(source_frame_idx)
+        source_arr = np.frombuffer(source_bytes, dtype=np.uint8)
+
+        # Align clip channel space onto the output channel space (absolute
+        # universe mapping means index N always refers to the same channel
+        # across clips of different sizes).
+        aligned = np.zeros(channel_count, dtype=np.uint8)
+        n = min(len(source_arr), channel_count)
+        aligned[:n] = source_arr[:n]
+
+        envelope = fade_envelope(local_ms, duration_ms, placement.fade_in_ms, placement.fade_out_ms)
+        scaled = np.clip(aligned.astype(np.float64) * envelope, 0, 255).astype(np.uint8)
+
+        merged = np.maximum(merged, scaled)  # HTP merge
+
+    return merged
+
+
 def render_timeline(
     placements: List[ClipPlacement],
     clip_paths: Dict[str, Union[str, Path]],
@@ -133,51 +180,14 @@ def render_timeline(
             if placement.clip_id not in readers:
                 readers[placement.clip_id] = FSEQReader(clip_paths[placement.clip_id])
 
-        # Determine each placement's active window and the overall output duration.
-        windows = []  # (placement, start_ms, duration_ms)
-        end_times_ms = [0]
-        for placement in placements:
-            reader = readers[placement.clip_id]
-            duration_ms = _placement_duration_ms(placement, reader.frame_count, reader.step_ms)
-            if duration_ms <= 0:
-                continue
-            windows.append((placement, placement.start_ms, duration_ms))
-            end_times_ms.append(placement.start_ms + duration_ms)
-
-        total_duration_ms = max(end_times_ms)
+        windows, total_duration_ms = _compute_windows(placements, readers)
         total_frames = max(1, math.ceil(total_duration_ms / step_ms)) if total_duration_ms > 0 else 0
 
         writer = FSEQWriter(output_path, channel_count=channel_count, step_ms=step_ms)
         try:
             for frame_idx in range(total_frames):
                 t_ms = frame_idx * step_ms
-                merged = np.zeros(channel_count, dtype=np.uint8)
-
-                for placement, start_ms, duration_ms in windows:
-                    if not (start_ms <= t_ms < start_ms + duration_ms):
-                        continue
-
-                    reader = readers[placement.clip_id]
-                    local_ms = t_ms - start_ms
-                    source_ms = placement.trim_start_ms + local_ms
-                    source_frame_idx = int(round(source_ms / reader.step_ms))
-                    source_frame_idx = max(0, min(reader.frame_count - 1, source_frame_idx))
-
-                    source_bytes = reader.read_frame(source_frame_idx)
-                    source_arr = np.frombuffer(source_bytes, dtype=np.uint8)
-
-                    # Align clip channel space onto the output channel space
-                    # (absolute universe mapping means index N always refers
-                    # to the same channel across clips of different sizes).
-                    aligned = np.zeros(channel_count, dtype=np.uint8)
-                    n = min(len(source_arr), channel_count)
-                    aligned[:n] = source_arr[:n]
-
-                    envelope = fade_envelope(local_ms, duration_ms, placement.fade_in_ms, placement.fade_out_ms)
-                    scaled = np.clip(aligned.astype(np.float64) * envelope, 0, 255).astype(np.uint8)
-
-                    merged = np.maximum(merged, scaled)  # HTP merge
-
+                merged = _compute_merged_frame(windows, readers, channel_count, t_ms)
                 writer.write_frame(merged.tobytes())
         finally:
             writer.close()
@@ -189,6 +199,30 @@ def render_timeline(
             step_ms=step_ms,
             duration_seconds=(total_frames * step_ms) / 1000.0,
         )
+    finally:
+        for reader in readers.values():
+            reader.close()
+
+
+def render_frame_at(
+    placements: List[ClipPlacement],
+    clip_paths: Dict[str, Union[str, Path]],
+    channel_count: int,
+    t_ms: float,
+) -> bytes:
+    """Compute a single HTP-merged frame at time t_ms without writing a file.
+
+    Used for scrubbing/playback preview in the UI, where re-rendering a full
+    export on every tick would be wasteful.
+    """
+    readers: Dict[str, FSEQReader] = {}
+    try:
+        for placement in placements:
+            if placement.clip_id not in readers:
+                readers[placement.clip_id] = FSEQReader(clip_paths[placement.clip_id])
+        windows, _total_duration_ms = _compute_windows(placements, readers)
+        merged = _compute_merged_frame(windows, readers, channel_count, t_ms)
+        return merged.tobytes()
     finally:
         for reader in readers.values():
             reader.close()

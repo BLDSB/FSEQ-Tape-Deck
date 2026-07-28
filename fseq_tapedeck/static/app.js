@@ -12,6 +12,12 @@ const state = {
   contextPlacementId: null,
   recordingPoll: null,
   statusPoll: null,
+  playing: false,
+  playheadMs: 0,
+  rafId: null,
+  lastTickTs: null,
+  lastFrameFetchTs: 0,
+  frameFetchInFlight: false,
 };
 
 const CLIP_COLORS = [
@@ -189,6 +195,8 @@ function renderTimeline() {
   for (const placement of state.timeline.placements) {
     track.appendChild(buildClipBlock(placement));
   }
+
+  setPlayheadVisual(state.playheadMs);
 }
 
 function buildClipBlock(placement) {
@@ -663,11 +671,128 @@ function initExportPanel() {
 
 function initScrubber() {
   const scrubber = document.getElementById("scrubber");
-  const cursor = document.getElementById("play-cursor");
   scrubber.addEventListener("input", () => {
     const ms = Number(scrubber.value);
-    cursor.style.left = `${ms * pxPerMs()}px`;
+    state.playheadMs = ms;
+    setPlayheadVisual(ms);
+    fetchAndDrawFrame(ms);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Playback + live channel meter
+// ---------------------------------------------------------------------------
+
+const FRAME_FETCH_INTERVAL_MS = 80;
+
+function currentMeterChannelCount() {
+  const raw = Number(document.getElementById("export-channel-count").value);
+  return Number.isFinite(raw) && raw > 0 ? Math.round(raw) : 512;
+}
+
+function setPlayheadVisual(ms) {
+  const totalMs = timelineTotalMs();
+  document.getElementById("scrubber").value = String(ms);
+  document.getElementById("play-cursor").style.left = `${ms * pxPerMs()}px`;
+  document.getElementById("playhead-label").textContent =
+    `${(ms / 1000).toFixed(1)}s / ${(totalMs / 1000).toFixed(1)}s`;
+}
+
+async function fetchAndDrawFrame(ms) {
+  if (state.frameFetchInFlight) return;
+  state.frameFetchInFlight = true;
+  try {
+    const data = await api.get(
+      `/api/timeline/frame?t_ms=${Math.round(ms)}&channel_count=${currentMeterChannelCount()}`
+    );
+    drawChannelMeter(data.channels);
+  } catch (e) {
+    // transient fetch errors during playback are not worth interrupting the user for
+  } finally {
+    state.frameFetchInFlight = false;
+  }
+}
+
+function drawChannelMeter(channels) {
+  const canvas = document.getElementById("channel-meter");
+  const rect = canvas.getBoundingClientRect();
+  if (canvas.width !== rect.width) canvas.width = rect.width;
+  if (canvas.height !== rect.height) canvas.height = rect.height;
+
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  if (!channels || channels.length === 0) return;
+
+  const barWidth = w / channels.length;
+  const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#4f8cff";
+
+  for (let i = 0; i < channels.length; i++) {
+    const level = channels[i] / 255;
+    const barHeight = level * h;
+    ctx.globalAlpha = 0.25 + 0.75 * level;
+    ctx.fillStyle = accent;
+    ctx.fillRect(i * barWidth, h - barHeight, Math.max(1, barWidth - 1), barHeight);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function playbackTick() {
+  if (!state.playing) return;
+  const now = performance.now();
+
+  const deltaMs = now - state.lastTickTs;
+  state.lastTickTs = now;
+  state.playheadMs += deltaMs;
+
+  const totalMs = timelineTotalMs();
+  if (state.playheadMs >= totalMs) {
+    state.playheadMs = totalMs;
+    setPlayheadVisual(state.playheadMs);
+    fetchAndDrawFrame(state.playheadMs);
+    stopPlayback();
+    return;
+  }
+
+  setPlayheadVisual(state.playheadMs);
+  if (now - state.lastFrameFetchTs >= FRAME_FETCH_INTERVAL_MS) {
+    state.lastFrameFetchTs = now;
+    fetchAndDrawFrame(state.playheadMs);
+  }
+}
+
+function startPlayback() {
+  if (state.playing) return;
+  if (state.playheadMs >= timelineTotalMs()) {
+    state.playheadMs = 0;
+  }
+  state.playing = true;
+  state.lastTickTs = performance.now();
+  state.lastFrameFetchTs = 0;
+  document.getElementById("btn-play-pause").innerHTML = "&#10074;&#10074; Pause";
+  // setInterval (not requestAnimationFrame) so playback keeps advancing even
+  // when the tab/pane isn't visibly compositing -- rAF fully pauses then.
+  state.rafId = setInterval(playbackTick, 50);
+}
+
+function stopPlayback() {
+  state.playing = false;
+  if (state.rafId) clearInterval(state.rafId);
+  state.rafId = null;
+  document.getElementById("btn-play-pause").innerHTML = "&#9658; Play";
+}
+
+function initPlayback() {
+  document.getElementById("btn-play-pause").addEventListener("click", () => {
+    if (state.playing) {
+      stopPlayback();
+    } else {
+      startPlayback();
+    }
+  });
+  setPlayheadVisual(0);
 }
 
 // ---------------------------------------------------------------------------
@@ -697,6 +822,7 @@ async function init() {
   initExportPanel();
   initScrubber();
   initZoom();
+  initPlayback();
 
   await refreshClips();
   await refreshTimeline();
