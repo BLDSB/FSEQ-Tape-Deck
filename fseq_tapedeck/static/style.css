@@ -135,11 +135,19 @@ body {
   display: block;
 }
 
-.clip-add-btn {
-  display: block;
-  width: 100%;
+.clip-item-actions {
+  display: flex;
+  gap: 6px;
   margin-top: 6px;
+}
+
+.clip-add-btn {
+  flex: 1 1 auto;
   text-align: center;
+}
+
+.clip-delete-btn {
+  flex: 0 0 auto;
 }
 
 .clip-item .clip-meta {

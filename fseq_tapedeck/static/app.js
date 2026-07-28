@@ -112,6 +112,9 @@ function renderClipList() {
     meta.className = "clip-meta";
     meta.textContent = `${formatDuration(clip.frame_count, clip.step_ms)} · ${clip.universes.length} universe(s)`;
 
+    const actions = document.createElement("div");
+    actions.className = "clip-item-actions";
+
     const addBtn = document.createElement("button");
     addBtn.className = "btn btn-small clip-add-btn";
     addBtn.textContent = "+ Add to Timeline";
@@ -121,9 +124,32 @@ function renderClipList() {
       addClipToTimeline(clip.clip_id, timelineEndMs());
     });
 
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "btn btn-small btn-danger clip-delete-btn";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.title = "Delete this clip";
+    deleteBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const placementCount = state.timeline.placements.filter((p) => p.clip_id === clip.clip_id).length;
+      const message = placementCount > 0
+        ? `"${clip.name}" is used in ${placementCount} timeline placement(s). Deleting it will leave those pointing at a missing clip. Delete anyway?`
+        : `Delete "${clip.name}"? This cannot be undone.`;
+      if (!confirm(message)) return;
+      try {
+        await api.del(`/api/clips/${clip.clip_id}`);
+        if (state.selectedClipId === clip.clip_id) state.selectedClipId = null;
+        await refreshClips();
+      } catch (err) {
+        alert(`Could not delete clip: ${err.message}`);
+      }
+    });
+
+    actions.appendChild(addBtn);
+    actions.appendChild(deleteBtn);
+
     li.appendChild(name);
     li.appendChild(meta);
-    li.appendChild(addBtn);
+    li.appendChild(actions);
 
     li.addEventListener("click", () => {
       state.selectedClipId = clip.clip_id;
