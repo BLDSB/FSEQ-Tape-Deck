@@ -205,6 +205,14 @@ class Recorder:
     def is_recording(self) -> bool:
         return self._running
 
+    def current_frame(self) -> Optional[bytes]:
+        """The live in-memory buffer snapshot -- exactly what would be
+        written on the next tick. Used to preview incoming console data
+        while a recording is in progress, without touching the clip file."""
+        if not self._running or self._buffer is None:
+            return None
+        return self._buffer.snapshot_flat(self.channel_count)
+
     def status(self) -> dict:
         elapsed_ms = 0
         if self._running and self.started_at is not None:
@@ -227,6 +235,8 @@ class Recorder:
             raise RuntimeError("a recording is already in progress")
         if not universes:
             raise ValueError("universes must be a non-empty list")
+        if not (0 <= step_ms <= 255):
+            raise ValueError(f"step_ms must fit in a single byte (0-255), got {step_ms}")
 
         self.clip_id = str(uuid.uuid4())
         self.name = name
@@ -245,10 +255,17 @@ class Recorder:
             raise ValueError(f"unknown protocol: {protocol!r}")
         self._listener.start()
 
-        clip_path = self.clips_dir / f"{self.clip_id}.fseq"
-        self._writer = FSEQWriter(
-            clip_path, channel_count=self.channel_count, step_ms=self.step_ms
-        )
+        try:
+            clip_path = self.clips_dir / f"{self.clip_id}.fseq"
+            self._writer = FSEQWriter(
+                clip_path, channel_count=self.channel_count, step_ms=self.step_ms
+            )
+        except Exception:
+            # Don't leave the listener's socket/thread running if the clip
+            # file couldn't be created.
+            self._listener.stop()
+            self._listener = None
+            raise
 
         self._running = True
         self.started_at = time.monotonic()

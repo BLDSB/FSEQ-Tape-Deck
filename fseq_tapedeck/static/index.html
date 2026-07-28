@@ -118,11 +118,14 @@
     </div>
 
     <div id="recording-live" class="recording-live hidden">
-      <div class="recording-live-stats">
-        <span id="recording-frame-count">0</span> frames &middot;
-        <span id="recording-elapsed">0.0</span>s
+      <div class="recording-live-row">
+        <div class="recording-live-stats">
+          <span id="recording-frame-count">0</span> frames &middot;
+          <span id="recording-elapsed">0.0</span>s
+        </div>
+        <button id="btn-stop-record" class="btn btn-danger">Stop</button>
       </div>
-      <button id="btn-stop-record" class="btn btn-danger">Stop</button>
+      <canvas id="record-channel-meter" class="record-channel-meter"></canvas>
     </div>
   </div>
 </div>

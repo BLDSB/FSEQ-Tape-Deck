@@ -45,3 +45,14 @@ async def stop_recording(request: Request):
 async def record_status(request: Request):
     recorder = request.app.state.recorder
     return recorder.status()
+
+
+@router.get("/frame")
+async def record_frame(request: Request):
+    """The live in-memory buffer -- lets the UI show incoming console data
+    is actually arriving while a recording is in progress."""
+    recorder = request.app.state.recorder
+    frame = recorder.current_frame()
+    if frame is None:
+        raise HTTPException(status_code=409, detail="no recording is in progress")
+    return {"channels": list(frame), "universes": recorder.universes, "channel_count": recorder.channel_count}

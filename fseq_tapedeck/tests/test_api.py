@@ -33,6 +33,9 @@ def test_full_api_flow():
             status = client.get("/api/record/status").json()
             assert status["recording"] is False
 
+            # No live frame preview when nothing is recording.
+            assert client.get("/api/record/frame").status_code == 409
+
             resp = client.post(
                 "/api/record/start",
                 json={"name": "cue-1", "universes": [1], "step_ms": 20, "protocol": "sacn"},
@@ -53,6 +56,11 @@ def test_full_api_flow():
             assert status["recording"] is True
             assert status["frame_count"] > 0
 
+            live_frame = client.get("/api/record/frame").json()
+            assert live_frame["channel_count"] == 512
+            assert len(live_frame["channels"]) == 512
+            assert live_frame["universes"] == [1]
+
             resp = client.post("/api/record/stop")
             assert resp.status_code == 200, resp.text
             clip = resp.json()
@@ -62,6 +70,9 @@ def test_full_api_flow():
 
             # Stopping again with nothing recording -> 409.
             assert client.post("/api/record/stop").status_code == 409
+
+            # Live frame preview is gone again once recording has stopped.
+            assert client.get("/api/record/frame").status_code == 409
 
             # --- Clips ---
             clips = client.get("/api/clips").json()

@@ -12,6 +12,7 @@ const state = {
   contextPlacementId: null,
   recordingPoll: null,
   statusPoll: null,
+  recordMeterPoll: null,
   playing: false,
   playheadMs: 0,
   rafId: null,
@@ -554,11 +555,32 @@ function startStatusPolling() {
       if (!status.recording) {
         clearInterval(state.statusPoll);
         state.statusPoll = null;
+        stopRecordMeterPolling();
       }
     } catch (e) {
       // ignore transient poll errors
     }
   }, 500);
+}
+
+function startRecordMeterPolling() {
+  if (state.recordMeterPoll) return;
+  state.recordMeterPoll = setInterval(async () => {
+    if (document.getElementById("record-modal").classList.contains("hidden")) return;
+    try {
+      const data = await api.get("/api/record/frame");
+      drawChannelMeter("record-channel-meter", data.channels);
+    } catch (e) {
+      // recording likely just stopped; startStatusPolling's own check cleans this up
+    }
+  }, 150);
+}
+
+function stopRecordMeterPolling() {
+  if (state.recordMeterPoll) {
+    clearInterval(state.recordMeterPoll);
+    state.recordMeterPoll = null;
+  }
 }
 
 function initRecordModal() {
@@ -585,6 +607,7 @@ function initRecordModal() {
       await api.post("/api/record/start", { name, universes, step_ms: stepMs, protocol });
       setRecordingFormVisible(false);
       startStatusPolling();
+      startRecordMeterPolling();
     } catch (err) {
       showRecordError(err.message);
     }
@@ -593,6 +616,7 @@ function initRecordModal() {
   document.getElementById("btn-stop-record").addEventListener("click", async () => {
     try {
       await api.post("/api/record/stop");
+      stopRecordMeterPolling();
       closeRecordModal();
       await refreshClips();
     } catch (err) {
@@ -705,7 +729,7 @@ async function fetchAndDrawFrame(ms) {
     const data = await api.get(
       `/api/timeline/frame?t_ms=${Math.round(ms)}&channel_count=${currentMeterChannelCount()}`
     );
-    drawChannelMeter(data.channels);
+    drawChannelMeter("channel-meter", data.channels);
   } catch (e) {
     // transient fetch errors during playback are not worth interrupting the user for
   } finally {
@@ -713,8 +737,8 @@ async function fetchAndDrawFrame(ms) {
   }
 }
 
-function drawChannelMeter(channels) {
-  const canvas = document.getElementById("channel-meter");
+function drawChannelMeter(canvasId, channels) {
+  const canvas = document.getElementById(canvasId);
   const rect = canvas.getBoundingClientRect();
   if (canvas.width !== rect.width) canvas.width = rect.width;
   if (canvas.height !== rect.height) canvas.height = rect.height;

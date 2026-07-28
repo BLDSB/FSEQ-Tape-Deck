@@ -141,10 +141,41 @@ def test_recorder_end_to_end_with_fake_source():
     print("OK: Recorder end-to-end record/stop produced a valid, verifiable FSEQ clip")
 
 
+def test_current_frame_reflects_live_buffer():
+    """current_frame() is what powers the recording-preview meter in the UI --
+    it must reflect the buffer immediately, not just on a write tick, and must
+    be None outside of an active recording."""
+
+    async def run():
+        recorder = Recorder(clips_dir=Path("_test_clips_tmp2"))
+        assert recorder.current_frame() is None  # nothing recording yet
+
+        await recorder.start(name="preview-test", universes=[1], step_ms=200, protocol="sacn")
+        try:
+            # Long-ish step_ms so we can check the buffer between ticks.
+            recorder._buffer.update(1, bytes([77] * UNIVERSE_CHANNELS))
+            frame = recorder.current_frame()
+            assert frame == bytes([77] * UNIVERSE_CHANNELS)
+            assert len(frame) == recorder.channel_count
+        finally:
+            await recorder.stop()
+
+        assert recorder.current_frame() is None  # cleared once stopped
+
+        clip_path = recorder.clips_dir / f"{recorder.clip_id}.fseq"
+        clip_path.unlink()
+        (recorder.clips_dir / f"{recorder.clip_id}.json").unlink()
+        recorder.clips_dir.rmdir()
+
+    asyncio.run(run())
+    print("OK: current_frame() mirrors the live buffer while recording, None otherwise")
+
+
 if __name__ == "__main__":
     test_universe_buffer_absolute_mapping()
     test_universe_buffer_holds_last_value()
     test_artnet_packet_parsing()
     test_sacn_listener_receives_loopback_packets()
     test_recorder_end_to_end_with_fake_source()
+    test_current_frame_reflects_live_buffer()
     print("\nAll recorder tests passed.")
