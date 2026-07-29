@@ -19,6 +19,7 @@ const state = {
   lastTickTs: null,
   lastFrameFetchTs: 0,
   frameFetchInFlight: false,
+  consoleOutputActive: false,
 };
 
 const CLIP_COLORS = [
@@ -839,7 +840,36 @@ function playbackTick() {
   }
 }
 
-function startPlayback() {
+async function startConsoleOutput() {
+  const statusEl = document.getElementById("console-output-status");
+  const destination = document.getElementById("console-output-destination").value.trim() || null;
+  try {
+    await api.post("/api/timeline/playback/start", {
+      channel_count: currentMeterChannelCount(),
+      step_ms: state.timeline.settings.step_ms || 40,
+      destination,
+      start_t_ms: state.playheadMs,
+    });
+    state.consoleOutputActive = true;
+    statusEl.textContent = destination ? `● sending to ${destination}` : "● sending (multicast)";
+  } catch (err) {
+    statusEl.textContent = "";
+    alert(`Could not start sending to console: ${err.message}`);
+  }
+}
+
+async function stopConsoleOutput() {
+  if (!state.consoleOutputActive) return;
+  state.consoleOutputActive = false;
+  document.getElementById("console-output-status").textContent = "";
+  try {
+    await api.post("/api/timeline/playback/stop");
+  } catch (err) {
+    // already stopped server-side (e.g. it reached the end on its own) -- fine
+  }
+}
+
+async function startPlayback() {
   if (state.playing) return;
   if (state.playheadMs >= timelineTotalMs()) {
     state.playheadMs = 0;
@@ -851,13 +881,18 @@ function startPlayback() {
   // setInterval (not requestAnimationFrame) so playback keeps advancing even
   // when the tab/pane isn't visibly compositing -- rAF fully pauses then.
   state.rafId = setInterval(playbackTick, 50);
+
+  if (document.getElementById("console-output-enabled").checked) {
+    await startConsoleOutput();
+  }
 }
 
-function stopPlayback() {
+async function stopPlayback() {
   state.playing = false;
   if (state.rafId) clearInterval(state.rafId);
   state.rafId = null;
   document.getElementById("btn-play-pause").innerHTML = "&#9658; Play";
+  await stopConsoleOutput();
 }
 
 function initPlayback() {

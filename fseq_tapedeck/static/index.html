@@ -50,6 +50,12 @@
     <div class="playback-bar">
       <button id="btn-play-pause" class="btn btn-primary">&#9658; Play</button>
       <span id="playhead-label" class="playhead-label">0.0s / 0.0s</span>
+      <label class="console-output-toggle">
+        <input type="checkbox" id="console-output-enabled">
+        Send to console
+      </label>
+      <input type="text" id="console-output-destination" class="console-output-ip" placeholder="Console IP (unicast)">
+      <span id="console-output-status" class="console-output-status"></span>
     </div>
     <div class="channel-meter-wrap">
       <canvas id="channel-meter"></canvas>

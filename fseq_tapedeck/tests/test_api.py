@@ -124,6 +124,34 @@ def test_full_api_flow():
             ).json()
             assert all(v == 0 for v in far_frame["channels"])  # nothing active that far out
 
+            # --- Live sACN playback output ---
+            status = client.get("/api/timeline/playback/status").json()
+            assert status["playing"] is False
+
+            start_playback = client.post(
+                "/api/timeline/playback/start",
+                json={"channel_count": 512, "step_ms": 40, "destination": "127.0.0.1"},
+            )
+            assert start_playback.status_code == 200, start_playback.text
+            assert start_playback.json()["playing"] is True
+
+            dup_playback = client.post(
+                "/api/timeline/playback/start",
+                json={"channel_count": 512, "step_ms": 40, "destination": "127.0.0.1"},
+            )
+            assert dup_playback.status_code == 409
+
+            status = client.get("/api/timeline/playback/status").json()
+            assert status["playing"] is True
+
+            stop_playback = client.post("/api/timeline/playback/stop")
+            assert stop_playback.status_code == 200, stop_playback.text
+
+            assert client.post("/api/timeline/playback/stop").status_code == 409
+
+            status = client.get("/api/timeline/playback/status").json()
+            assert status["playing"] is False
+
             # --- Export ---
             export = client.post(
                 "/api/timeline/export",

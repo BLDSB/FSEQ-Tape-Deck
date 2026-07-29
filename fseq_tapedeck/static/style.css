@@ -292,6 +292,26 @@ body {
   font-size: 11px;
 }
 
+.console-output-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-dim);
+  font-size: 11px;
+  white-space: nowrap;
+  margin-left: auto;
+}
+
+.console-output-ip {
+  width: 140px;
+}
+
+.console-output-status {
+  font-size: 11px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
 .channel-meter-wrap {
   padding: 0 12px 10px 12px;
   flex: 0 0 auto;

@@ -226,3 +226,20 @@ def render_frame_at(
     finally:
         for reader in readers.values():
             reader.close()
+
+
+def timeline_duration_ms(
+    placements: List[ClipPlacement],
+    clip_paths: Dict[str, Union[str, Path]],
+) -> float:
+    """The timeline's overall duration in ms (0 if there are no placements)."""
+    readers: Dict[str, FSEQReader] = {}
+    try:
+        for placement in placements:
+            if placement.clip_id not in readers:
+                readers[placement.clip_id] = FSEQReader(clip_paths[placement.clip_id])
+        _windows, total_duration_ms = _compute_windows(placements, readers)
+        return total_duration_ms
+    finally:
+        for reader in readers.values():
+            reader.close()

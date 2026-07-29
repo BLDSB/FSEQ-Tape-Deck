@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from clip_store import ClipNotFoundError
-from mixer import render_frame_at, render_timeline
+from mixer import render_frame_at, render_timeline, timeline_duration_ms
 
 router = APIRouter(prefix="/api/timeline", tags=["mixer"])
 
@@ -46,6 +46,13 @@ class ExportRequest(BaseModel):
     name: str
     channel_count: int
     step_ms: int
+
+
+class PlaybackStartRequest(BaseModel):
+    channel_count: int
+    step_ms: int = 40
+    destination: Optional[str] = None
+    start_t_ms: float = 0.0
 
 
 @router.get("")
@@ -106,6 +113,52 @@ async def get_frame_at(t_ms: float, request: Request, channel_count: Optional[in
         t_ms=max(0.0, t_ms),
     )
     return {"t_ms": t_ms, "channels": list(frame_bytes)}
+
+
+@router.post("/playback/start")
+async def start_playback(body: PlaybackStartRequest, request: Request):
+    """Stream the current timeline mix out over sACN in real time, e.g. so
+    a console's visualizer can show it. Defaults to multicast; pass
+    `destination` (the console's IP) for unicast, which is more reliable
+    on machines with multiple network adapters (VPNs, WSL, ...)."""
+    timeline = request.app.state.timeline
+    clip_store = request.app.state.clip_store
+    engine = request.app.state.playback_engine
+
+    if engine.is_playing:
+        raise HTTPException(status_code=409, detail="playback is already running")
+
+    clip_paths = _resolve_clip_paths(timeline.placements, clip_store)
+    total_ms = timeline_duration_ms(timeline.placements, clip_paths)
+
+    try:
+        await engine.start(
+            placements=timeline.placements,
+            clip_paths=clip_paths,
+            channel_count=body.channel_count,
+            step_ms=body.step_ms,
+            total_ms=total_ms,
+            destination=body.destination,
+            start_t_ms=body.start_t_ms,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return engine.status()
+
+
+@router.post("/playback/stop")
+async def stop_playback(request: Request):
+    engine = request.app.state.playback_engine
+    if not engine.is_playing:
+        raise HTTPException(status_code=409, detail="playback is not running")
+    await engine.stop()
+    return {"stopped": True}
+
+
+@router.get("/playback/status")
+async def playback_status(request: Request):
+    engine = request.app.state.playback_engine
+    return engine.status()
 
 
 @router.post("/export")

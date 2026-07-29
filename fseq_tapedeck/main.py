@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from api import routes_clips, routes_mixer, routes_recorder
 from clip_store import ClipStore
 from mixer import Timeline
+from playback import PlaybackEngine
 from recorder import Recorder
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -32,6 +33,7 @@ def create_app() -> FastAPI:
     app.state.clip_store = ClipStore(CLIPS_DIR)
     app.state.recorder = Recorder(CLIPS_DIR)
     app.state.timeline = Timeline(PROJECT_FILE)
+    app.state.playback_engine = PlaybackEngine()
 
     app.include_router(routes_recorder.router)
     app.include_router(routes_clips.router)
