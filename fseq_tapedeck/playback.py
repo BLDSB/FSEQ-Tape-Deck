@@ -50,6 +50,8 @@ class PlaybackEngine:
             "playing": self._running,
             "t_ms": self.t_ms,
             "total_ms": self.total_ms,
+            "channel_count": self.channel_count,
+            "destination": self.destination,
         }
 
     async def start(

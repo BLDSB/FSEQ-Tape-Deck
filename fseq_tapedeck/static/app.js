@@ -843,15 +843,17 @@ function playbackTick() {
 async function startConsoleOutput() {
   const statusEl = document.getElementById("console-output-status");
   const destination = document.getElementById("console-output-destination").value.trim() || null;
+  const channelCount = currentMeterChannelCount();
   try {
     await api.post("/api/timeline/playback/start", {
-      channel_count: currentMeterChannelCount(),
+      channel_count: channelCount,
       step_ms: state.timeline.settings.step_ms || 40,
       destination,
       start_t_ms: state.playheadMs,
     });
     state.consoleOutputActive = true;
-    statusEl.textContent = destination ? `● sending to ${destination}` : "● sending (multicast)";
+    const target = destination ? `to ${destination}` : "(multicast)";
+    statusEl.textContent = `● sending ${channelCount}ch ${target}`;
   } catch (err) {
     statusEl.textContent = "";
     alert(`Could not start sending to console: ${err.message}`);
