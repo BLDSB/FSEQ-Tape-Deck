@@ -205,6 +205,39 @@
   </div>
 </div>
 
+<!-- Loop clip modal -->
+<div id="loop-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <h2>Loop Clip</h2>
+    <p class="crossfade-desc">
+      Build a new, seamless looping clip from
+      <strong id="loop-source-name">this clip</strong> &mdash; no jumps in color
+      or brightness at the loop point. The original clip is left untouched.
+    </p>
+    <label>
+      New clip name
+      <input type="text" id="loop-name" placeholder="e.g. Ambient (loop)">
+    </label>
+    <label>
+      Loop style
+      <select id="loop-mode">
+        <option value="pingpong" selected>Ping-pong (forward then reverse)</option>
+        <option value="crossfade">Crossfade (forward only)</option>
+      </select>
+    </label>
+    <p class="field-hint" id="loop-mode-hint"></p>
+    <label id="loop-crossfade-row">
+      Crossfade length (ms)
+      <input type="number" id="loop-crossfade-ms" min="1" step="1" value="1000">
+    </label>
+    <div class="modal-error hidden" id="loop-modal-error"></div>
+    <div class="modal-actions">
+      <button id="btn-cancel-loop" class="btn">Cancel</button>
+      <button id="btn-apply-loop" class="btn btn-primary">Create loop</button>
+    </div>
+  </div>
+</div>
+
 <!-- Context menu for timeline blocks -->
 <ul id="context-menu" class="context-menu hidden">
   <li id="ctx-crossfade">Crossfade into next…</li>

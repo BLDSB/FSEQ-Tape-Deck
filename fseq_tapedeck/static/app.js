@@ -130,6 +130,33 @@ function renderClipList() {
       addClipToTimeline(clip.clip_id, timelineEndMs());
     });
 
+    const loopBtn = document.createElement("button");
+    loopBtn.className = "btn btn-small clip-loop-btn";
+    loopBtn.textContent = "Loop…";
+    loopBtn.title = "Build a new, seamless looping clip from this one";
+    loopBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openLoopModal(clip);
+    });
+
+    const renameBtn = document.createElement("button");
+    renameBtn.className = "btn btn-small clip-rename-btn";
+    renameBtn.textContent = "Rename…";
+    renameBtn.title = "Rename this clip";
+    renameBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const name = prompt(`Rename "${clip.name}" to:`, clip.name);
+      if (name === null) return; // cancelled
+      const trimmed = name.trim();
+      if (!trimmed || trimmed === clip.name) return;
+      try {
+        await api.patch(`/api/clips/${clip.clip_id}`, { name: trimmed });
+        await refreshClips();
+      } catch (err) {
+        alert(`Could not rename clip: ${err.message}`);
+      }
+    });
+
     const deleteBtn = document.createElement("button");
     deleteBtn.className = "btn btn-small btn-danger clip-delete-btn";
     deleteBtn.textContent = "Delete";
@@ -151,6 +178,8 @@ function renderClipList() {
     });
 
     actions.appendChild(addBtn);
+    actions.appendChild(loopBtn);
+    actions.appendChild(renameBtn);
     actions.appendChild(deleteBtn);
 
     li.appendChild(name);
@@ -553,6 +582,81 @@ function initCrossfadeModal() {
       });
       modal.classList.add("hidden");
       await refreshTimeline();
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.classList.remove("hidden");
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Loop clip modal
+// ---------------------------------------------------------------------------
+
+const LOOP_MODE_HINTS = {
+  pingpong:
+    "Plays forward then back to the start. No jump anywhere in color or " +
+    "brightness; motion reverses on the way back. Best for symmetric or " +
+    "ambient looks. The loop is about twice the clip's length.",
+  crossfade:
+    "Keeps motion moving forward by dissolving the end back into the start. " +
+    "Seamless at the loop point, but blends the start and end together over " +
+    "the crossfade length and trims the loop slightly.",
+};
+
+function syncLoopModeUI() {
+  const mode = document.getElementById("loop-mode").value;
+  document.getElementById("loop-mode-hint").textContent = LOOP_MODE_HINTS[mode] || "";
+  // The crossfade length only applies to the crossfade style.
+  document.getElementById("loop-crossfade-row").classList.toggle("hidden", mode !== "crossfade");
+}
+
+function openLoopModal(clip) {
+  const modal = document.getElementById("loop-modal");
+  modal.dataset.clipId = clip.clip_id;
+  document.getElementById("loop-source-name").textContent = clip.name;
+  document.getElementById("loop-name").value = `${clip.name} (loop)`;
+  document.getElementById("loop-mode").value = "pingpong";
+  document.getElementById("loop-crossfade-ms").value = "1000";
+  document.getElementById("loop-modal-error").classList.add("hidden");
+  syncLoopModeUI();
+  modal.classList.remove("hidden");
+}
+
+function initLoopModal() {
+  document.getElementById("loop-mode").addEventListener("change", syncLoopModeUI);
+
+  document.getElementById("btn-cancel-loop").addEventListener("click", () => {
+    document.getElementById("loop-modal").classList.add("hidden");
+  });
+
+  document.getElementById("btn-apply-loop").addEventListener("click", async () => {
+    const modal = document.getElementById("loop-modal");
+    const errEl = document.getElementById("loop-modal-error");
+    errEl.classList.add("hidden");
+
+    const name = document.getElementById("loop-name").value.trim();
+    if (!name) {
+      errEl.textContent = "Enter a name for the new looped clip.";
+      errEl.classList.remove("hidden");
+      return;
+    }
+    const mode = document.getElementById("loop-mode").value;
+    const crossfadeMs = Number(document.getElementById("loop-crossfade-ms").value);
+    if (mode === "crossfade" && (!Number.isFinite(crossfadeMs) || crossfadeMs <= 0)) {
+      errEl.textContent = "Enter a crossfade length greater than 0.";
+      errEl.classList.remove("hidden");
+      return;
+    }
+
+    try {
+      await api.post(`/api/clips/${modal.dataset.clipId}/loop`, {
+        name,
+        mode,
+        crossfade_ms: Math.round(crossfadeMs),
+      });
+      modal.classList.add("hidden");
+      await refreshClips();
     } catch (err) {
       errEl.textContent = err.message;
       errEl.classList.remove("hidden");
@@ -1193,6 +1297,7 @@ async function init() {
   initContextMenu();
   initEditModal();
   initCrossfadeModal();
+  initLoopModal();
   initRecordModal();
   initExportPanel();
   initScrubber();

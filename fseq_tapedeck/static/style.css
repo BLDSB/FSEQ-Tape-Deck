@@ -137,17 +137,24 @@ body {
 
 .clip-item-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin-top: 6px;
 }
 
+/* Primary action on its own full-width row... */
 .clip-add-btn {
-  flex: 1 1 auto;
+  flex: 1 1 100%;
   text-align: center;
 }
 
+/* ...with the utility buttons sharing an equal-width row below it, so they
+   fit the narrow clip-library column no matter the label lengths. */
+.clip-loop-btn,
+.clip-rename-btn,
 .clip-delete-btn {
-  flex: 0 0 auto;
+  flex: 1 1 0;
+  text-align: center;
 }
 
 .clip-item .clip-meta {
