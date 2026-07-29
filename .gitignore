@@ -7,3 +7,5 @@ fseq_tapedeck/clips/*
 fseq_tapedeck/exports/*
 !fseq_tapedeck/exports/.gitkeep
 project.json
+# Leftover from the removed named-projects feature; a project is now a .ftdproj bundle.
+fseq_tapedeck/projects/

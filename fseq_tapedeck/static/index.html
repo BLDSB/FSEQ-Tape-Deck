@@ -9,7 +9,16 @@
 <body>
 
 <header class="app-header">
-  <h1>FSEQ Tapedeck</h1>
+  <div class="header-left">
+    <h1>FSEQ Tapedeck</h1>
+    <div class="project-bar">
+      <span class="project-label">Project</span>
+      <span id="current-project-name" class="project-name untitled">Untitled</span>
+      <button id="btn-project-new" class="btn btn-small">New</button>
+      <button id="btn-project-open" class="btn btn-small">Open…</button>
+      <button id="btn-project-save" class="btn btn-small">Save…</button>
+    </div>
+  </div>
   <div id="record-indicator" class="record-indicator hidden">
     <span class="rec-dot"></span>
     <span id="record-indicator-text">Recording…</span>

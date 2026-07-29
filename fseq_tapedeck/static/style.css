@@ -47,6 +47,40 @@ body {
   letter-spacing: 0.3px;
 }
 
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.project-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-label {
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.project-name {
+  font-weight: 600;
+  font-size: 13px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-name.untitled {
+  color: var(--text-dim);
+  font-weight: 500;
+  font-style: italic;
+}
+
 .record-indicator {
   display: flex;
   align-items: center;

@@ -1274,6 +1274,98 @@ function initPlayback() {
 }
 
 // ---------------------------------------------------------------------------
+// Project (new / open / save) -- the whole working state (all recordings + the
+// timeline) is one portable .ftdproj bundle. See routes_project.py / bundle.py.
+// ---------------------------------------------------------------------------
+
+function updateProjectHeader() {
+  const el = document.getElementById("current-project-name");
+  const name = state.timeline.settings && state.timeline.settings.project_name;
+  if (name) {
+    el.textContent = name;
+    el.classList.remove("untitled");
+    el.title = name;
+  } else {
+    el.textContent = "Untitled";
+    el.classList.add("untitled");
+    el.title = "This project hasn't been saved yet";
+  }
+}
+
+// New/Open discard the current project (recordings included), so guard when
+// there's anything to lose. Returns true if it's OK to proceed.
+function confirmDiscardProject(action) {
+  const hasWork = state.clips.length > 0 || state.timeline.placements.length > 0;
+  if (!hasWork) return true;
+  return confirm(`${action} will delete the current recordings and clear the timeline. Save first if you want to keep them. Continue?`);
+}
+
+async function applyLoadedProject() {
+  // Shared tail of new/open: the library and timeline both changed on the
+  // server, so pull everything and reset the playhead.
+  state.playheadMs = 0;
+  await refreshClips();
+  await refreshTimeline();
+  updateProjectHeader();
+  fetchAndDrawFrame(0);
+}
+
+async function newProject() {
+  if (!confirmDiscardProject("Starting a new project")) return;
+  try {
+    await api.post("/api/project/new");
+    await applyLoadedProject();
+  } catch (err) {
+    alert(`Could not start a new project: ${err.message}`);
+  }
+}
+
+async function openProject() {
+  if (!confirmDiscardProject("Opening a project")) return;
+  const btn = document.getElementById("btn-project-open");
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Opening...";
+  try {
+    const res = await api.post("/api/project/open");
+    if (res.cancelled) return;
+    await applyLoadedProject();
+    alert(`Opened "${res.current}" - ${res.clips_imported} recording(s) loaded.`);
+  } catch (err) {
+    alert(`Could not open project: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
+async function saveProject() {
+  const btn = document.getElementById("btn-project-save");
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Saving...";
+  try {
+    const res = await api.post("/api/project/save");
+    if (res.cancelled) return;
+    // The saved file's name becomes the project name; reflect it in the header.
+    await refreshTimeline();
+    updateProjectHeader();
+    alert(`Saved "${res.current}" (${res.clip_count} recording(s)) to:\n${res.path}`);
+  } catch (err) {
+    alert(`Could not save project: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
+function initProjectControls() {
+  document.getElementById("btn-project-new").addEventListener("click", newProject);
+  document.getElementById("btn-project-open").addEventListener("click", openProject);
+  document.getElementById("btn-project-save").addEventListener("click", saveProject);
+}
+
+// ---------------------------------------------------------------------------
 // Zoom
 // ---------------------------------------------------------------------------
 
@@ -1304,9 +1396,11 @@ async function init() {
   initZoom();
   initPlayback();
   initConsoleOutput();
+  initProjectControls();
 
   await refreshClips();
   await refreshTimeline();
+  updateProjectHeader();
   await refreshExportDir();
   await refreshExports();
 

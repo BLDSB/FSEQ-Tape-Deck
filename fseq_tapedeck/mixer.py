@@ -81,6 +81,19 @@ class Timeline:
         }
         self.project_path.write_text(json.dumps(data, indent=2))
 
+    def replace_state(self, placements: List[dict], settings: dict) -> None:
+        """Load a saved project's timeline into this (working) timeline,
+        replacing whatever was open, and persist it as the working copy."""
+        self.placements = [ClipPlacement(**p) for p in placements]
+        self.settings = dict(settings)
+        self.save()
+
+    def clear(self) -> None:
+        """Empty the working timeline to a fresh, untitled project."""
+        self.placements = []
+        self.settings.pop("project_name", None)
+        self.save()
+
     def _find(self, placement_id: str) -> ClipPlacement:
         for p in self.placements:
             if p.placement_id == placement_id:

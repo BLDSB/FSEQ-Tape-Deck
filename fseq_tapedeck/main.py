@@ -6,7 +6,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from api import routes_clips, routes_mixer, routes_recorder
+from api import routes_clips, routes_mixer, routes_project, routes_recorder
 from clip_store import ClipStore
 from mixer import Timeline
 from playback import PlaybackEngine
@@ -38,6 +38,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_recorder.router)
     app.include_router(routes_clips.router)
     app.include_router(routes_mixer.router)
+    app.include_router(routes_project.router)
 
     if STATIC_DIR.exists():
         # This is a locally-run tool that gets edited and re-launched often;

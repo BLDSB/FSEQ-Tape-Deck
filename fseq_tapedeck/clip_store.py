@@ -59,3 +59,11 @@ class ClipStore:
         fseq_path = self._fseq_path(clip_id)
         if fseq_path.exists():
             fseq_path.unlink()
+
+    def clear(self) -> None:
+        """Delete every clip in the library. Used when starting a new project
+        or replacing the current one on open -- a project owns its recordings."""
+        for path in self.clips_dir.glob("*.fseq"):
+            path.unlink()
+        for path in self.clips_dir.glob("*.json"):
+            path.unlink()
