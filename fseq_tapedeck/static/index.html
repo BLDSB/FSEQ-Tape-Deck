@@ -81,6 +81,14 @@
           <option value="50">50 ms (20 fps)</option>
         </select>
       </label>
+      <label>
+        Save exports to
+        <input type="text" id="export-dir-path" placeholder="Default (exports/)">
+      </label>
+      <div class="export-dir-actions">
+        <button id="btn-browse-export-dir" class="btn btn-small">Browse…</button>
+        <button id="btn-open-export-dir" class="btn btn-small">Open folder</button>
+      </div>
       <button id="btn-export" class="btn btn-primary">Export…</button>
     </div>
     <h3 class="exports-heading">Exports</h3>
@@ -163,6 +171,10 @@
       <input type="number" id="edit-fade-out-ms" min="0" step="1">
     </label>
     <label>
+      Crossfade in (ms, 0 = off)
+      <input type="number" id="edit-crossfade-ms" min="0" step="1">
+    </label>
+    <label>
       Trim start (ms)
       <input type="number" id="edit-trim-start-ms" min="0" step="1">
     </label>
@@ -195,9 +207,31 @@
 
 <!-- Context menu for timeline blocks -->
 <ul id="context-menu" class="context-menu hidden">
+  <li id="ctx-crossfade">Crossfade into next…</li>
   <li id="ctx-edit">Edit…</li>
   <li id="ctx-remove">Remove</li>
 </ul>
+
+<!-- Auto crossfade modal -->
+<div id="crossfade-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <h2>Auto Crossfade</h2>
+    <p class="crossfade-desc">
+      Smoothly dissolve <strong id="crossfade-from">this clip</strong> into
+      <strong id="crossfade-to">the next clip</strong> &mdash; no sudden jumps
+      in color or brightness. The clips are overlapped for you.
+    </p>
+    <label>
+      Crossfade length (ms)
+      <input type="number" id="crossfade-duration-ms" min="1" step="1" value="1000">
+    </label>
+    <div class="modal-error hidden" id="crossfade-modal-error"></div>
+    <div class="modal-actions">
+      <button id="btn-cancel-crossfade" class="btn">Cancel</button>
+      <button id="btn-apply-crossfade" class="btn btn-primary">Crossfade</button>
+    </div>
+  </div>
+</div>
 
 <script src="app.js"></script>
 </body>

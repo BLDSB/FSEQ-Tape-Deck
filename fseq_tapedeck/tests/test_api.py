@@ -111,6 +111,45 @@ def test_full_api_flow():
             timeline = client.get("/api/timeline").json()
             assert len(timeline["placements"]) == 1
 
+            # --- Auto-crossfade arrangement ---
+            clip_meta = next(c for c in client.get("/api/clips").json() if c["clip_id"] == clip_id)
+            clip_dur = clip_meta["frame_count"] * clip_meta["step_ms"]
+            assert clip_dur > 0
+
+            second = client.post(
+                "/api/timeline/placements",
+                json={"clip_id": clip_id, "start_ms": clip_dur + 5000},
+            ).json()
+            second_id = second["placement_id"]
+
+            # Ask for an over-long crossfade; it clamps to the clip length and
+            # overlaps the incoming clip fully onto the outgoing one.
+            cf = client.post(
+                "/api/timeline/crossfade",
+                json={"placement_id_a": placement_id, "placement_id_b": second_id, "duration_ms": 10_000_000},
+            )
+            assert cf.status_code == 200, cf.text
+            cfj = cf.json()
+            assert cfj["duration_ms"] == clip_dur
+            assert cfj["incoming"]["crossfade_ms"] == clip_dur
+            assert cfj["incoming"]["fade_in_ms"] == 0
+            assert cfj["incoming"]["start_ms"] == 0  # start + dur - dur
+            assert cfj["outgoing"]["fade_out_ms"] == 0
+
+            # Crossfading a clip with itself is rejected.
+            assert client.post(
+                "/api/timeline/crossfade",
+                json={"placement_id_a": placement_id, "placement_id_b": placement_id, "duration_ms": 100},
+            ).status_code == 400
+
+            # Persisted crossfade_ms survives a round-trip through the API.
+            assert any(
+                p["crossfade_ms"] == clip_dur for p in client.get("/api/timeline").json()["placements"]
+            )
+
+            # Clean up so the export section below sees a single placement again.
+            assert client.delete(f"/api/timeline/placements/{second_id}").status_code == 200
+
             # --- Live frame preview (used for playback/scrubbing) ---
             frame = client.get(
                 "/api/timeline/frame", params={"t_ms": 0, "channel_count": 512}
@@ -127,6 +166,7 @@ def test_full_api_flow():
             # --- Live sACN playback output ---
             status = client.get("/api/timeline/playback/status").json()
             assert status["playing"] is False
+            assert status["active"] is False
 
             start_playback = client.post(
                 "/api/timeline/playback/start",
@@ -146,11 +186,42 @@ def test_full_api_flow():
 
             stop_playback = client.post("/api/timeline/playback/stop")
             assert stop_playback.status_code == 200, stop_playback.text
+            assert stop_playback.json()["stopped"] is True
 
-            assert client.post("/api/timeline/playback/stop").status_code == 409
+            # stop is idempotent now (the client stops output on checkbox-off
+            # even when only holding a scrubbed frame, never playing)
+            second_stop = client.post("/api/timeline/playback/stop")
+            assert second_stop.status_code == 200
+            assert second_stop.json()["stopped"] is False
 
             status = client.get("/api/timeline/playback/status").json()
             assert status["playing"] is False
+
+            # --- Live scrub output: source holds a frame without advancing ---
+            scrub = client.post(
+                "/api/timeline/playback/scrub",
+                json={"t_ms": 100, "channel_count": 512, "destination": "127.0.0.1"},
+            )
+            assert scrub.status_code == 200, scrub.text
+            assert scrub.json()["active"] is True
+            assert scrub.json()["playing"] is False
+
+            # moving the held playhead on the already-live source
+            scrub2 = client.post(
+                "/api/timeline/playback/scrub",
+                json={"t_ms": 250, "channel_count": 512, "destination": "127.0.0.1"},
+            )
+            assert scrub2.status_code == 200
+            assert scrub2.json()["t_ms"] == 250
+
+            # pause is a no-op while merely holding, but keeps the source up
+            pause = client.post("/api/timeline/playback/pause")
+            assert pause.status_code == 200
+            assert pause.json()["active"] is True
+
+            assert client.post("/api/timeline/playback/stop").json()["stopped"] is True
+            status = client.get("/api/timeline/playback/status").json()
+            assert status["active"] is False
 
             # --- Export ---
             export = client.post(
@@ -169,6 +240,41 @@ def test_full_api_flow():
 
             exports = client.get("/api/timeline/exports").json()
             assert any(e["name"] == "export-1" for e in exports)
+
+            # --- Configurable export directory ---
+            dir_info = client.get("/api/timeline/export-dir").json()
+            assert dir_info["is_default"] is True
+
+            custom_dir = tmp_dir / "picked exports"
+            set_dir = client.put(
+                "/api/timeline/export-dir", json={"path": str(custom_dir)}
+            ).json()
+            assert set_dir["is_default"] is False
+            assert Path(set_dir["path"]) == custom_dir
+            assert custom_dir.exists()  # created on set
+
+            # Exporting now lands in the chosen folder, and the list follows it.
+            export2 = client.post(
+                "/api/timeline/export",
+                json={"name": "export-2", "channel_count": 512, "step_ms": 20},
+            ).json()
+            assert Path(export2["path"]).parent == custom_dir
+            names = [e["name"] for e in client.get("/api/timeline/exports").json()]
+            assert names == ["export-2"]  # the old default-folder export is not listed here
+
+            # A user-chosen folder can hold unrelated .json files (arrays, other
+            # shapes); listing must skip them, not crash.
+            (custom_dir / "unrelated-array.json").write_text("[1, 2, 3]")
+            (custom_dir / "unrelated-obj.json").write_text('{"hello": "world"}')
+            listed = client.get("/api/timeline/exports")
+            assert listed.status_code == 200, listed.text
+            assert [e["name"] for e in listed.json()] == ["export-2"]
+
+            # Blank path resets to the default.
+            reset = client.put("/api/timeline/export-dir", json={"path": ""}).json()
+            assert reset["is_default"] is True
+            names = [e["name"] for e in client.get("/api/timeline/exports").json()]
+            assert "export-1" in names
 
             # --- Cleanup via API ---
             assert client.delete(f"/api/timeline/placements/{placement_id}").status_code == 200

@@ -28,11 +28,23 @@ class ClipPlacement:
     fade_out_ms: int = 0
     trim_start_ms: int = 0
     trim_end_ms: Optional[int] = None
+    # When > 0, this placement dissolves in from whatever is playing beneath it
+    # over its first crossfade_ms, instead of HTP-merging. A true dissolve
+    # (A*(1-w) + B*w) moves every channel smoothly from the outgoing look to
+    # this one with no HTP dip/bump. Supersedes fade_in_ms during that window.
+    crossfade_ms: int = 0
     placement_id: str = ""
 
     def __post_init__(self):
         if not self.placement_id:
             self.placement_id = str(uuid.uuid4())
+
+
+def _smoothstep(u: float) -> float:
+    """Ease-in/ease-out 0->1 ramp. Used to weight a crossfade so the dissolve
+    has no abrupt change in rate at either end of the transition."""
+    u = max(0.0, min(1.0, u))
+    return u * u * (3.0 - 2.0 * u)
 
 
 def fade_envelope(local_ms: float, duration_ms: float, fade_in_ms: int, fade_out_ms: int) -> float:
@@ -131,36 +143,70 @@ def _compute_windows(placements: List[ClipPlacement], readers: Dict[str, FSEQRea
     return windows, max(end_times_ms)
 
 
+def _scaled_layer(
+    placement: ClipPlacement,
+    reader: FSEQReader,
+    channel_count: int,
+    t_ms: float,
+    start_ms: float,
+    duration_ms: float,
+    fade_in_override: Optional[int] = None,
+) -> np.ndarray:
+    """One placement's fade-scaled frame at t_ms, aligned onto the output
+    channel space (absolute universe mapping means index N is the same real
+    channel across clips of different sizes). fade_in_override lets a crossfade
+    suppress the placement's own fade-in for the incoming edge."""
+    local_ms = t_ms - start_ms
+    source_ms = placement.trim_start_ms + local_ms
+    source_frame_idx = int(round(source_ms / reader.step_ms))
+    source_frame_idx = max(0, min(reader.frame_count - 1, source_frame_idx))
+
+    source_arr = np.frombuffer(reader.read_frame(source_frame_idx), dtype=np.uint8)
+    aligned = np.zeros(channel_count, dtype=np.uint8)
+    n = min(len(source_arr), channel_count)
+    aligned[:n] = source_arr[:n]
+
+    fade_in = placement.fade_in_ms if fade_in_override is None else fade_in_override
+    envelope = fade_envelope(local_ms, duration_ms, fade_in, placement.fade_out_ms)
+    return np.clip(aligned.astype(np.float64) * envelope, 0, 255).astype(np.uint8)
+
+
 def _compute_merged_frame(windows, readers: Dict[str, FSEQReader], channel_count: int, t_ms: float) -> np.ndarray:
-    """The single HTP-merged, fade-scaled frame active at t_ms."""
-    merged = np.zeros(channel_count, dtype=np.uint8)
+    """The single frame active at t_ms: normal placements HTP-merge as before;
+    a placement inside its crossfade window instead dissolves over the mix
+    beneath it, so transitions move smoothly with no HTP dip or bump."""
+    base = np.zeros(channel_count, dtype=np.uint8)
+    crossfading = []
 
     for placement, start_ms, duration_ms in windows:
         if not (start_ms <= t_ms < start_ms + duration_ms):
             continue
 
-        reader = readers[placement.clip_id]
-        local_ms = t_ms - start_ms
-        source_ms = placement.trim_start_ms + local_ms
-        source_frame_idx = int(round(source_ms / reader.step_ms))
-        source_frame_idx = max(0, min(reader.frame_count - 1, source_frame_idx))
+        cf_ms = getattr(placement, "crossfade_ms", 0) or 0
+        if cf_ms > 0 and t_ms < start_ms + cf_ms:
+            crossfading.append((start_ms, placement, duration_ms))
+            continue
 
-        source_bytes = reader.read_frame(source_frame_idx)
-        source_arr = np.frombuffer(source_bytes, dtype=np.uint8)
+        scaled = _scaled_layer(
+            placement, readers[placement.clip_id], channel_count, t_ms, start_ms, duration_ms
+        )
+        base = np.maximum(base, scaled)  # HTP merge (unchanged for normal clips)
 
-        # Align clip channel space onto the output channel space (absolute
-        # universe mapping means index N always refers to the same channel
-        # across clips of different sizes).
-        aligned = np.zeros(channel_count, dtype=np.uint8)
-        n = min(len(source_arr), channel_count)
-        aligned[:n] = source_arr[:n]
+    if not crossfading:
+        return base
 
-        envelope = fade_envelope(local_ms, duration_ms, placement.fade_in_ms, placement.fade_out_ms)
-        scaled = np.clip(aligned.astype(np.float64) * envelope, 0, 255).astype(np.uint8)
+    # Dissolve each incoming placement over everything beneath it. Applied in
+    # start order so stacked crossfades compose predictably.
+    acc = base.astype(np.float64)
+    for start_ms, placement, duration_ms in sorted(crossfading, key=lambda w: w[0]):
+        incoming = _scaled_layer(
+            placement, readers[placement.clip_id], channel_count, t_ms, start_ms, duration_ms,
+            fade_in_override=0,  # the crossfade replaces the incoming fade-in
+        ).astype(np.float64)
+        w = _smoothstep((t_ms - start_ms) / placement.crossfade_ms)
+        acc = acc * (1.0 - w) + incoming * w
 
-        merged = np.maximum(merged, scaled)  # HTP merge
-
-    return merged
+    return np.clip(np.round(acc), 0, 255).astype(np.uint8)
 
 
 def render_timeline(
@@ -226,6 +272,15 @@ def render_frame_at(
     finally:
         for reader in readers.values():
             reader.close()
+
+
+def placement_duration_ms(placement: ClipPlacement, clip_path: Union[str, Path]) -> int:
+    """A single placement's on-timeline duration in ms, after trims."""
+    reader = FSEQReader(clip_path)
+    try:
+        return _placement_duration_ms(placement, reader.frame_count, reader.step_ms)
+    finally:
+        reader.close()
 
 
 def timeline_duration_ms(

@@ -20,12 +20,17 @@ const state = {
   lastFrameFetchTs: 0,
   frameFetchInFlight: false,
   consoleOutputActive: false,
+  scrubSendInFlight: false,
+  scrubPendingMs: null,
 };
 
 const CLIP_COLORS = [
   "#7fd4ff", "#ffd27f", "#a8ff7f", "#ff9ecb",
   "#c6a8ff", "#7fffe0", "#ffb37f", "#9ecbff",
 ];
+
+// Must match --scrubber-thumb-w in style.css.
+const SCRUBBER_THUMB_W = 14;
 
 function pxPerMs() {
   return state.pxPerSec / 1000;
@@ -219,6 +224,12 @@ function renderTimeline() {
 
   const scrubber = document.getElementById("scrubber");
   scrubber.max = String(totalMs);
+  // Span the full timeline so the blue thumb tracks the red play-cursor. Width
+  // is the track content width plus one thumb width; the extra thumb width plus
+  // the row's negative left margin cancel the native thumb inset so the thumb
+  // center travels exactly edge-to-edge. Keep SCRUBBER_THUMB_W in sync with
+  // --scrubber-thumb-w in style.css.
+  scrubber.style.width = `${totalMs * pxPerMs() + SCRUBBER_THUMB_W}px`;
 
   for (const placement of state.timeline.placements) {
     track.appendChild(buildClipBlock(placement));
@@ -256,6 +267,13 @@ function buildClipBlock(placement) {
     overlay.className = "fade-overlay fade-out-overlay";
     overlay.style.right = "0";
     overlay.style.width = `${Math.min(durationMs, placement.fade_out_ms) * ppms}px`;
+    block.appendChild(overlay);
+  }
+  if (placement.crossfade_ms > 0) {
+    const overlay = document.createElement("div");
+    overlay.className = "crossfade-overlay";
+    overlay.style.width = `${Math.min(durationMs, placement.crossfade_ms) * ppms}px`;
+    overlay.title = `Crossfades in over ${(placement.crossfade_ms / 1000).toFixed(1)}s`;
     block.appendChild(overlay);
   }
 
@@ -462,6 +480,84 @@ function initContextMenu() {
     if (!id) return;
     openEditModal(id);
   });
+
+  document.getElementById("ctx-crossfade").addEventListener("click", () => {
+    const id = state.contextPlacementId;
+    closeContextMenu();
+    if (!id) return;
+    openCrossfadeModal(id);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Auto crossfade
+// ---------------------------------------------------------------------------
+
+// The placement that starts soonest after `placement` on the timeline -- the
+// natural target to dissolve into.
+function nextPlacementAfter(placement) {
+  let best = null;
+  for (const p of state.timeline.placements) {
+    if (p.placement_id === placement.placement_id) continue;
+    if (p.start_ms < placement.start_ms) continue;
+    if (p.start_ms === placement.start_ms && p.placement_id <= placement.placement_id) continue;
+    if (best === null || p.start_ms < best.start_ms) best = p;
+  }
+  return best;
+}
+
+function openCrossfadeModal(placementId) {
+  const from = state.timeline.placements.find((p) => p.placement_id === placementId);
+  if (!from) return;
+  const to = nextPlacementAfter(from);
+  if (!to) {
+    alert("There's no clip after this one to crossfade into. Add or drag another clip so it starts later, then try again.");
+    return;
+  }
+
+  const fromClip = clipById(from.clip_id);
+  const toClip = clipById(to.clip_id);
+  const modal = document.getElementById("crossfade-modal");
+  modal.dataset.fromId = from.placement_id;
+  modal.dataset.toId = to.placement_id;
+  document.getElementById("crossfade-from").textContent = fromClip ? fromClip.name : "this clip";
+  document.getElementById("crossfade-to").textContent = toClip ? toClip.name : "the next clip";
+
+  // Default to 1s, but never longer than the shorter of the two clips.
+  const maxLen = Math.max(1, Math.min(placementDurationMs(from), placementDurationMs(to)));
+  document.getElementById("crossfade-duration-ms").value = String(Math.min(1000, maxLen));
+  document.getElementById("crossfade-modal-error").classList.add("hidden");
+  modal.classList.remove("hidden");
+}
+
+function initCrossfadeModal() {
+  document.getElementById("btn-cancel-crossfade").addEventListener("click", () => {
+    document.getElementById("crossfade-modal").classList.add("hidden");
+  });
+
+  document.getElementById("btn-apply-crossfade").addEventListener("click", async () => {
+    const modal = document.getElementById("crossfade-modal");
+    const errEl = document.getElementById("crossfade-modal-error");
+    errEl.classList.add("hidden");
+    const duration = Number(document.getElementById("crossfade-duration-ms").value);
+    if (!Number.isFinite(duration) || duration <= 0) {
+      errEl.textContent = "Enter a crossfade length greater than 0.";
+      errEl.classList.remove("hidden");
+      return;
+    }
+    try {
+      await api.post("/api/timeline/crossfade", {
+        placement_id_a: modal.dataset.fromId,
+        placement_id_b: modal.dataset.toId,
+        duration_ms: Math.round(duration),
+      });
+      modal.classList.add("hidden");
+      await refreshTimeline();
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.classList.remove("hidden");
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -476,6 +572,7 @@ function openEditModal(placementId) {
   document.getElementById("edit-start-ms").value = placement.start_ms;
   document.getElementById("edit-fade-in-ms").value = placement.fade_in_ms;
   document.getElementById("edit-fade-out-ms").value = placement.fade_out_ms;
+  document.getElementById("edit-crossfade-ms").value = placement.crossfade_ms || 0;
   document.getElementById("edit-trim-start-ms").value = placement.trim_start_ms;
   document.getElementById("edit-trim-end-ms").value = placement.trim_end_ms ?? "";
   document.getElementById("edit-modal").classList.remove("hidden");
@@ -495,6 +592,7 @@ function initEditModal() {
       start_ms: Number(document.getElementById("edit-start-ms").value),
       fade_in_ms: Number(document.getElementById("edit-fade-in-ms").value),
       fade_out_ms: Number(document.getElementById("edit-fade-out-ms").value),
+      crossfade_ms: Number(document.getElementById("edit-crossfade-ms").value),
       trim_start_ms: Number(document.getElementById("edit-trim-start-ms").value),
       trim_end_ms: trimEndRaw === "" ? null : Number(trimEndRaw),
     };
@@ -708,7 +806,60 @@ async function refreshExports() {
   }
 }
 
+async function refreshExportDir() {
+  try {
+    const info = await api.get("/api/timeline/export-dir");
+    const input = document.getElementById("export-dir-path");
+    // Show the default's implicit path via placeholder only, so the field
+    // stays empty (= "use default") until the user picks somewhere explicit.
+    input.value = info.is_default ? "" : info.path;
+  } catch (e) {
+    // non-fatal; the field just stays as-is
+  }
+}
+
+async function saveExportDir(path) {
+  const info = await api.put("/api/timeline/export-dir", { path });
+  const input = document.getElementById("export-dir-path");
+  input.value = info.is_default ? "" : info.path;
+  await refreshExports();
+}
+
+function initExportDirControls() {
+  document.getElementById("export-dir-path").addEventListener("change", async (e) => {
+    try {
+      await saveExportDir(e.target.value.trim());
+    } catch (err) {
+      alert(`Could not set the export folder: ${err.message}`);
+      await refreshExportDir();
+    }
+  });
+
+  document.getElementById("btn-browse-export-dir").addEventListener("click", async () => {
+    const btn = document.getElementById("btn-browse-export-dir");
+    btn.disabled = true;
+    try {
+      const { path } = await api.post("/api/timeline/export-dir/browse");
+      if (path) await saveExportDir(path);
+    } catch (err) {
+      alert(`Could not open the folder picker: ${err.message}`);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById("btn-open-export-dir").addEventListener("click", async () => {
+    try {
+      await api.post("/api/timeline/export-dir/open");
+    } catch (err) {
+      alert(`Could not open the export folder: ${err.message}`);
+    }
+  });
+}
+
 function initExportPanel() {
+  initExportDirControls();
+
   document.getElementById("btn-export").addEventListener("click", () => {
     document.getElementById("export-name").value = "";
     document.getElementById("export-modal-error").classList.add("hidden");
@@ -753,6 +904,9 @@ function initScrubber() {
     state.playheadMs = ms;
     setPlayheadVisual(ms);
     fetchAndDrawFrame(ms);
+    if (state.consoleOutputActive && !state.playing) {
+      sendScrubToConsole(ms);
+    }
   });
 }
 
@@ -840,30 +994,109 @@ function playbackTick() {
   }
 }
 
-async function startConsoleOutput() {
-  const statusEl = document.getElementById("console-output-status");
-  const destination = document.getElementById("console-output-destination").value.trim() || null;
-  const channelCount = currentMeterChannelCount();
+// Live console (sACN) output. The "Send to console" checkbox opts in to
+// streaming the current look out live: it holds the frame under the playhead
+// while scrubbing/paused and advances while playing, without dropping the
+// source. See PlaybackEngine in playback.py for the hold-vs-advance split.
+
+function consoleOutputEnabled() {
+  return document.getElementById("console-output-enabled").checked;
+}
+
+function consoleOutputParams() {
+  return {
+    channel_count: currentMeterChannelCount(),
+    step_ms: state.timeline.settings.step_ms || 40,
+    destination: document.getElementById("console-output-destination").value.trim() || null,
+  };
+}
+
+function setConsoleOutputStatus(mode) {
+  // mode: "playing" | "holding" | "" (off)
+  const el = document.getElementById("console-output-status");
+  if (!mode) {
+    el.textContent = "";
+    return;
+  }
+  const p = consoleOutputParams();
+  const target = p.destination ? `to ${p.destination}` : "(multicast)";
+  const verb = mode === "playing" ? "sending" : "holding";
+  el.textContent = `● ${verb} ${p.channel_count}ch ${target}`;
+}
+
+// Start (or transition to) advancing output for Play.
+async function startConsolePlay() {
   try {
     await api.post("/api/timeline/playback/start", {
-      channel_count: channelCount,
-      step_ms: state.timeline.settings.step_ms || 40,
-      destination,
+      ...consoleOutputParams(),
       start_t_ms: state.playheadMs,
     });
     state.consoleOutputActive = true;
-    const target = destination ? `to ${destination}` : "(multicast)";
-    statusEl.textContent = `● sending ${channelCount}ch ${target}`;
+    setConsoleOutputStatus("playing");
   } catch (err) {
-    statusEl.textContent = "";
+    setConsoleOutputStatus("");
     alert(`Could not start sending to console: ${err.message}`);
   }
 }
 
+// Bring the source up holding a single frame (checkbox toggle / destination change).
+async function holdConsoleAt(ms) {
+  try {
+    await api.post("/api/timeline/playback/scrub", {
+      ...consoleOutputParams(),
+      t_ms: ms,
+    });
+    state.consoleOutputActive = true;
+    if (!state.playing) setConsoleOutputStatus("holding");
+  } catch (err) {
+    setConsoleOutputStatus("");
+    alert(`Could not send to console: ${err.message}`);
+  }
+}
+
+// Coalescing throttle: scrubber "input" fires rapidly, so only one request is
+// in flight at a time and the most recent position is always sent last.
+function sendScrubToConsole(ms) {
+  state.scrubPendingMs = ms;
+  if (state.scrubSendInFlight) return;
+  flushScrubToConsole();
+}
+
+async function flushScrubToConsole() {
+  if (state.scrubPendingMs === null) return;
+  const ms = state.scrubPendingMs;
+  state.scrubPendingMs = null;
+  state.scrubSendInFlight = true;
+  try {
+    await api.post("/api/timeline/playback/scrub", {
+      ...consoleOutputParams(),
+      t_ms: ms,
+    });
+    if (!state.playing) setConsoleOutputStatus("holding");
+  } catch (err) {
+    // transient errors mid-scrub are not worth interrupting the drag for
+  } finally {
+    state.scrubSendInFlight = false;
+    if (state.scrubPendingMs !== null) flushScrubToConsole();
+  }
+}
+
+// Keep the source up but stop advancing, holding the current frame.
+async function pauseConsoleOutput() {
+  if (!state.consoleOutputActive) return;
+  try {
+    await api.post("/api/timeline/playback/pause");
+    setConsoleOutputStatus("holding");
+  } catch (err) {
+    // already stopped server-side -- fine
+  }
+}
+
+// Tear the source down completely.
 async function stopConsoleOutput() {
   if (!state.consoleOutputActive) return;
   state.consoleOutputActive = false;
-  document.getElementById("console-output-status").textContent = "";
+  setConsoleOutputStatus("");
   try {
     await api.post("/api/timeline/playback/stop");
   } catch (err) {
@@ -884,8 +1117,8 @@ async function startPlayback() {
   // when the tab/pane isn't visibly compositing -- rAF fully pauses then.
   state.rafId = setInterval(playbackTick, 50);
 
-  if (document.getElementById("console-output-enabled").checked) {
-    await startConsoleOutput();
+  if (consoleOutputEnabled()) {
+    await startConsolePlay();
   }
 }
 
@@ -894,7 +1127,35 @@ async function stopPlayback() {
   if (state.rafId) clearInterval(state.rafId);
   state.rafId = null;
   document.getElementById("btn-play-pause").innerHTML = "&#9658; Play";
-  await stopConsoleOutput();
+  // Keep the live source up (holding the current frame) if the user still
+  // wants output; only fully stop when they've opted out.
+  if (consoleOutputEnabled()) {
+    await pauseConsoleOutput();
+  } else {
+    await stopConsoleOutput();
+  }
+}
+
+function initConsoleOutput() {
+  document.getElementById("console-output-enabled").addEventListener("change", (e) => {
+    if (e.target.checked) {
+      if (state.playing) {
+        startConsolePlay();
+      } else {
+        holdConsoleAt(state.playheadMs);
+      }
+    } else {
+      stopConsoleOutput();
+    }
+  });
+  // Retarget a live (held) source when the destination IP changes -- the sACN
+  // sender has to be reopened for a new destination, so stop and re-hold.
+  document.getElementById("console-output-destination").addEventListener("change", async () => {
+    if (state.consoleOutputActive && !state.playing) {
+      await stopConsoleOutput();
+      await holdConsoleAt(state.playheadMs);
+    }
+  });
 }
 
 function initPlayback() {
@@ -931,14 +1192,17 @@ async function init() {
   initTimelineDropTarget();
   initContextMenu();
   initEditModal();
+  initCrossfadeModal();
   initRecordModal();
   initExportPanel();
   initScrubber();
   initZoom();
   initPlayback();
+  initConsoleOutput();
 
   await refreshClips();
   await refreshTimeline();
+  await refreshExportDir();
   await refreshExports();
 
   try {

@@ -130,7 +130,85 @@ def test_playback_engine_rejects_concurrent_start():
     print("OK: PlaybackEngine rejects a second concurrent start")
 
 
+def test_playback_engine_holds_scrubbed_frame_without_advancing():
+    """Scrub/hold mode: the source stays up and transmits whatever frame the
+    held playhead points at, without walking the timeline forward."""
+    channel_count = 512
+    step_ms = 40
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        clip_a_path = tmp / "a.fseq"
+        clip_b_path = tmp / "b.fseq"
+        make_constant_clip(clip_a_path, channel_count, step_ms, duration_s=4, value=100)
+        make_constant_clip(clip_b_path, channel_count, step_ms, duration_s=4, value=220)
+
+        placements = [
+            ClipPlacement(clip_id="a", start_ms=0),
+            ClipPlacement(clip_id="b", start_ms=2000),
+        ]
+        clip_paths = {"a": clip_a_path, "b": clip_b_path}
+
+        received_values = []
+        receiver = sacn.sACNreceiver(bind_address="0.0.0.0")
+        receiver.register_listener(
+            "universe", lambda p: received_values.append(p.dmxData[0]), universe=1
+        )
+        receiver.start()
+
+        async def run():
+            engine = PlaybackEngine()
+            # Hold the frame at t=0 (inside clip A -> 100). Not playing.
+            await engine.start(
+                placements=placements,
+                clip_paths=clip_paths,
+                channel_count=channel_count,
+                step_ms=step_ms,
+                total_ms=4000,
+                destination="127.0.0.1",
+                start_t_ms=0,
+                play=False,
+            )
+            assert engine.is_active and not engine.is_playing
+
+            await _wait_for(lambda: 100 in received_values, timeout=4.0)
+            assert 100 in received_values, f"never held clip A; got {set(received_values)}"
+
+            # Scrub into clip B (t=2500 -> 220). Still not advancing.
+            received_values.clear()
+            await engine.scrub(placements, clip_paths, t_ms=2500)
+            assert engine.t_ms == 2500 and not engine.is_playing
+
+            await _wait_for(lambda: 220 in received_values, timeout=4.0)
+            assert 220 in received_values, f"never held clip B; got {set(received_values)}"
+
+            # A held source does not advance on its own: still parked at 2500.
+            await asyncio.sleep(0.5)
+            assert engine.t_ms == 2500
+
+            # Pause is a no-op while merely holding, and keeps the source up.
+            await engine.pause()
+            assert engine.is_active and not engine.is_playing
+
+            await engine.stop()
+            assert not engine.is_active
+
+        asyncio.run(run())
+        receiver.stop()
+
+    print("OK: PlaybackEngine holds a scrubbed frame live without advancing")
+
+
+async def _wait_for(predicate, timeout):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.05)
+
+
 if __name__ == "__main__":
     test_playback_engine_streams_real_sacn_over_loopback()
     test_playback_engine_rejects_concurrent_start()
+    test_playback_engine_holds_scrubbed_frame_without_advancing()
     print("\nAll playback tests passed.")

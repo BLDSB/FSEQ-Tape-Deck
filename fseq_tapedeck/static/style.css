@@ -259,6 +259,20 @@ body {
   background: linear-gradient(to left, rgba(0,0,0,0.55), rgba(0,0,0,0));
 }
 
+/* Crossfade (dissolve) region on the incoming clip: a diagonal hatch in the
+   accent color so it reads differently from a plain fade. */
+.crossfade-overlay {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  pointer-events: none;
+  border-right: 2px solid var(--accent);
+  background:
+    linear-gradient(to right, rgba(79,140,255,0.55), rgba(79,140,255,0.05)),
+    repeating-linear-gradient(45deg, rgba(255,255,255,0.18) 0 3px, rgba(255,255,255,0) 3px 7px);
+}
+
 .play-cursor {
   position: absolute;
   top: -22px;
@@ -269,12 +283,57 @@ body {
   pointer-events: none;
 }
 
+/* The scrubber row spans the full (scrollable) timeline width so the blue
+   thumb stays directly under the red play-cursor at every position. Its left
+   edge is aligned to the track's inner content box; its width is set in JS to
+   match the track. --scrubber-thumb-w must match the thumb width below and the
+   SCRUBBER_THUMB_W constant in app.js. */
+:root { --scrubber-thumb-w: 14px; }
+
 .timeline-scrubber-row {
-  margin: 8px 8px 8px 8px;
+  position: relative;
+  height: 16px;
+  /* track content starts at margin(8) + border(1) = 9px from timeline-inner;
+     shift left by half the thumb so the thumb *center* lands on the edge. */
+  margin: 8px 0 8px calc(9px - var(--scrubber-thumb-w) / 2);
 }
 
 .scrubber {
-  width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  /* width set in JS: track content width + one thumb width */
+}
+
+.scrubber::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent-dim);
+}
+.scrubber::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: var(--scrubber-thumb-w);
+  height: var(--scrubber-thumb-w);
+  border-radius: 50%;
+  background: var(--accent);
+  margin-top: -5px; /* center the thumb on the 4px track */
+}
+.scrubber::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent-dim);
+}
+.scrubber::-moz-range-thumb {
+  width: var(--scrubber-thumb-w);
+  height: var(--scrubber-thumb-w);
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
 }
 
 .playback-bar {
@@ -348,6 +407,15 @@ body {
   gap: 4px;
   color: var(--text-dim);
   font-size: 11px;
+}
+
+.export-dir-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.export-dir-actions .btn {
+  flex: 1 1 auto;
 }
 
 .exports-heading {
@@ -456,6 +524,17 @@ input[type="text"], input[type="number"], select {
 .modal h2 {
   margin: 0 0 4px 0;
   font-size: 14px;
+}
+
+.crossfade-desc {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.crossfade-desc strong {
+  color: var(--text);
 }
 
 .modal-actions {

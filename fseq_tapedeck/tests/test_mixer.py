@@ -122,6 +122,77 @@ def test_htp_crossfade_render():
     print("OK: HTP merge + crossfade envelope math verified frame-by-frame on channel 0")
 
 
+def test_crossfade_dissolve_has_no_htp_dip():
+    """The whole point of the crossfade: a channel that is bright in BOTH clips
+    must stay bright through the transition. HTP + opposing fades would dip it
+    to ~half at the midpoint; a true dissolve holds it flat."""
+    channel_count = 512
+    step_ms = 40
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        clip_a_path = tmp / "a.fseq"
+        clip_b_path = tmp / "b.fseq"
+        # Same value (200) on every channel in both clips.
+        make_constant_clip(clip_a_path, channel_count, step_ms, duration_s=10, value=200)
+        make_constant_clip(clip_b_path, channel_count, step_ms, duration_s=10, value=200)
+
+        # A: 0-10s. B: dissolves in over 8-10s (2s crossfade). Auto-arrange would
+        # also clear A's fade_out and B's fade_in -- set here directly.
+        placement_a = ClipPlacement(clip_id="a", start_ms=0, fade_out_ms=0)
+        placement_b = ClipPlacement(clip_id="b", start_ms=8000, crossfade_ms=2000)
+
+        clip_paths = {"a": clip_a_path, "b": clip_b_path}
+
+        def ch0(t_ms):
+            return render_frame_at([placement_a, placement_b], clip_paths, channel_count, t_ms)[0]
+
+        # Across the entire crossfade window the value never dips below 200.
+        for t in (8000, 8400, 8800, 9000, 9200, 9600, 9960):
+            assert ch0(t) == 200, f"dip at t={t}: {ch0(t)} (HTP regression would give ~100)"
+        # And after the transition, still 200 (B alone).
+        assert ch0(12000) == 200
+
+    print("OK: crossfade dissolve holds a mutually-bright channel flat (no HTP dip)")
+
+
+def test_crossfade_dissolve_is_smooth_and_monotonic():
+    """A channel that differs between clips moves smoothly and monotonically
+    from the outgoing value to the incoming one, never overshooting either."""
+    channel_count = 512
+    step_ms = 40
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        clip_a_path = tmp / "a.fseq"
+        clip_b_path = tmp / "b.fseq"
+        make_constant_clip(clip_a_path, channel_count, step_ms, duration_s=10, value=200)
+        make_constant_clip(clip_b_path, channel_count, step_ms, duration_s=10, value=60)
+
+        placement_a = ClipPlacement(clip_id="a", start_ms=0, fade_out_ms=0)
+        placement_b = ClipPlacement(clip_id="b", start_ms=8000, crossfade_ms=2000)
+        clip_paths = {"a": clip_a_path, "b": clip_b_path}
+
+        def ch0(t_ms):
+            return render_frame_at([placement_a, placement_b], clip_paths, channel_count, t_ms)[0]
+
+        # Endpoints: exactly the outgoing value at the start, incoming at the end.
+        assert ch0(8000) == 200
+        assert ch0(12000) == 60  # after the window, B alone
+
+        samples = [ch0(t) for t in range(8000, 10000, 200)]
+        # Monotonic non-increasing, and every value stays within [60, 200]
+        # (a convex blend can never overshoot, so no dip/bump).
+        for earlier, later in zip(samples, samples[1:]):
+            assert later <= earlier, f"not monotonic: {samples}"
+        assert all(60 <= v <= 200 for v in samples), samples
+
+        # Smoothstep midpoint (w=0.5): 200*0.5 + 60*0.5 = 130.
+        assert abs(ch0(9000) - 130) <= 1, ch0(9000)
+
+    print("OK: crossfade dissolve is smooth, monotonic, and never overshoots")
+
+
 def test_render_frame_at_matches_render_timeline():
     """render_frame_at (used for live playback preview) must agree with
     render_timeline's per-frame output -- it's the same merge logic, just
@@ -194,6 +265,8 @@ def test_timeline_persistence(tmp_path=None):
 if __name__ == "__main__":
     test_fade_envelope_math()
     test_htp_crossfade_render()
+    test_crossfade_dissolve_has_no_htp_dip()
+    test_crossfade_dissolve_is_smooth_and_monotonic()
     test_render_frame_at_matches_render_timeline()
     test_timeline_persistence()
     print("\nAll mixer tests passed.")
