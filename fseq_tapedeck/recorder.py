@@ -29,6 +29,18 @@ ARTNET_ID = b"Art-Net\x00"
 ARTNET_OPCODE_DMX = 0x5000
 UNIVERSE_CHANNELS = 512
 
+# Once the first universe's data arrives, how long to keep waiting for the
+# remaining selected universes before starting anyway. Universes stream
+# independently and land a few ms apart, so a brief wait means frame 0 has
+# every universe in it; the cap means a console that only sends some of the
+# selected universes still records instead of waiting forever.
+PRIME_GRACE_MS = 250
+
+
+class NoDataRecordedError(RuntimeError):
+    """Raised by Recorder.stop() when no DMX ever arrived, so there are no
+    frames to save."""
+
 
 def list_local_ipv4_addresses() -> List[str]:
     """Best-effort list of this machine's non-loopback IPv4 addresses.
@@ -62,12 +74,29 @@ class UniverseBuffer:
         self._data: Dict[int, bytearray] = {
             u: bytearray(UNIVERSE_CHANNELS) for u in universes
         }
+        self._seen: set = set()
 
     def update(self, universe: int, values: bytes) -> None:
         with self._lock:
             if universe in self._data:
                 n = min(len(values), UNIVERSE_CHANNELS)
                 self._data[universe][:n] = values[:n]
+                self._seen.add(universe)
+
+    @property
+    def has_data(self) -> bool:
+        """Whether any selected universe has received data yet. Until this is
+        true the buffer is still all zeros -- recording it would bake a
+        blackout into the head of the clip."""
+        with self._lock:
+            return bool(self._seen)
+
+    @property
+    def is_primed(self) -> bool:
+        """Whether *every* selected universe has received data, so a snapshot
+        is a complete look rather than a partially-lit one."""
+        with self._lock:
+            return len(self._seen) == len(self._data)
 
     def snapshot_flat(self, channel_count: int) -> bytes:
         frame = bytearray(channel_count)
@@ -215,8 +244,10 @@ class Recorder:
         self._listener: Optional[Union[SACNListener, ArtNetListener]] = None
         self._buffer: Optional[UniverseBuffer] = None
         self._writer: Optional[FSEQWriter] = None
+        self._clip_path: Optional[Path] = None
         self._task: Optional[asyncio.Task] = None
         self._running = False
+        self._waiting_for_data = False
 
         self.clip_id: Optional[str] = None
         self.name: Optional[str] = None
@@ -248,6 +279,9 @@ class Recorder:
             "clip_name": self.name,
             "frame_count": self.frame_count,
             "elapsed_ms": elapsed_ms,
+            # Armed, but holding off the first frame until DMX actually
+            # arrives -- see _await_first_data().
+            "waiting_for_data": self._waiting_for_data,
         }
 
     async def start(
@@ -284,9 +318,9 @@ class Recorder:
         self._listener.start()
 
         try:
-            clip_path = self.clips_dir / f"{self.clip_id}.fseq"
+            self._clip_path = self.clips_dir / f"{self.clip_id}.fseq"
             self._writer = FSEQWriter(
-                clip_path, channel_count=self.channel_count, step_ms=self.step_ms
+                self._clip_path, channel_count=self.channel_count, step_ms=self.step_ms
             )
         except Exception:
             # Don't leave the listener's socket/thread running if the clip
@@ -296,10 +330,36 @@ class Recorder:
             raise
 
         self._running = True
+        self._waiting_for_data = True
         self.started_at = time.monotonic()
         self._task = asyncio.create_task(self._record_loop())
 
+    async def _await_first_data(self) -> None:
+        """Hold off the first frame until real DMX is flowing.
+
+        A listener does not start delivering the instant it is created: the
+        socket has to bind and (for sACN) join multicast, which can take up to
+        about a second. Recording through that startup captures the buffer's
+        initial zeros, baking a blackout into the head of the clip -- which
+        shows up as every light blinking each time the finished sequence wraps
+        around and restarts. Waiting for the first packet means frame 0 is
+        real, lit data.
+        """
+        while self._running and not self._buffer.has_data:
+            await asyncio.sleep(0.005)
+        # First universe is in; give the rest a moment to land so frame 0 is a
+        # complete look rather than a partially-lit one.
+        deadline = time.monotonic() + PRIME_GRACE_MS / 1000.0
+        while self._running and not self._buffer.is_primed and time.monotonic() < deadline:
+            await asyncio.sleep(0.005)
+
     async def _record_loop(self) -> None:
+        await self._await_first_data()
+        self._waiting_for_data = False
+        # Elapsed time counts from the first recorded frame, not from arming,
+        # so it stays in step with frame_count.
+        self.started_at = time.monotonic()
+
         interval = self.step_ms / 1000.0
         next_tick = time.monotonic()
         while self._running:
@@ -317,10 +377,29 @@ class Recorder:
         if not self._running:
             raise RuntimeError("no recording is in progress")
         self._running = False
+        self._waiting_for_data = False
         if self._task:
             await self._task
+
+        if self.frame_count == 0 and self._buffer.has_data:
+            # Stopped in the window between the first packet landing and the
+            # record loop's first tick. Data did arrive, so capture it rather
+            # than throwing away a (very short) recording.
+            self._writer.write_frame(self._buffer.snapshot_flat(self.channel_count))
+            self.frame_count = 1
+
         self._listener.stop()
         self._writer.close()
+
+        if self.frame_count == 0:
+            # Stopped while still waiting for the first packet -- there is no
+            # clip to save, and an empty .fseq would only break later.
+            if self._clip_path is not None:
+                self._clip_path.unlink(missing_ok=True)
+            raise NoDataRecordedError(
+                f"no {self.protocol} data arrived on universe(s) "
+                f"{', '.join(str(u) for u in self.universes)}, so nothing was recorded"
+            )
 
         metadata = ClipMetadata(
             clip_id=self.clip_id,

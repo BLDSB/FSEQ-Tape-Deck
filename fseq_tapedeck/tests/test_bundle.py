@@ -109,13 +109,19 @@ def test_project_rest_flow():
         app = main.create_app()
 
         with TestClient(app) as client:
-            # Record two clips; place only one on the timeline.
+            # Record two clips; place only one on the timeline. The recorder
+            # holds its first frame until DMX actually arrives (so clips never
+            # open on a blackout), so feed the buffer directly to stand in for
+            # a live console.
             ids = []
             for nm in ("one", "two"):
                 client.post("/api/record/start",
                             json={"name": nm, "universes": [1], "step_ms": 20, "protocol": "sacn"})
+                app.state.recorder._buffer.update(1, bytes([128] * 512))
                 time.sleep(0.12)
-                ids.append(client.post("/api/record/stop").json()["clip_id"])
+                stopped = client.post("/api/record/stop")
+                assert stopped.status_code == 200, stopped.text
+                ids.append(stopped.json()["clip_id"])
             client.post("/api/timeline/placements", json={"clip_id": ids[0], "start_ms": 0})
 
             assert client.get("/api/project").json()["current"] is None

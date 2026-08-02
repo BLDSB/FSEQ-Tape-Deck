@@ -11,13 +11,14 @@ index N always means the same real-world DMX address in every clip.
 import json
 import math
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 import numpy as np
 
 from fseq import FSEQInfo, FSEQReader, FSEQWriter
+from loop import ClipView, write_crossfade_loop
 
 
 @dataclass
@@ -222,17 +223,79 @@ def _compute_merged_frame(windows, readers: Dict[str, FSEQReader], channel_count
     return np.clip(np.round(acc), 0, 255).astype(np.uint8)
 
 
+@dataclass
+class ExportReport:
+    """What the exporter had to change to make the file safe to loop, and what
+    it could not fix on its own.
+
+    A player like FPP restarts the file the instant it ends, so any dark frame
+    at the head or tail lands right next to lit content at the wrap and reads
+    as the whole rig blinking. Those are trimmed. Dark stretches *between*
+    clips can't be closed without changing the show's timing, so they are
+    reported for the user to fix on the timeline.
+    """
+
+    lead_trimmed_ms: int = 0
+    tail_trimmed_ms: int = 0
+    loop_crossfade_ms: int = 0
+    # (start_ms, end_ms) of each interior blackout, in original timeline time.
+    blackout_gaps: List[tuple] = field(default_factory=list)
+
+    @property
+    def is_loop_safe(self) -> bool:
+        return not self.blackout_gaps
+
+
+@dataclass
+class ExportResult:
+    info: FSEQInfo
+    report: ExportReport
+
+
+def _scan_blackouts(reader: FSEQReader):
+    """One pass over a rendered mix: ``(first, last, interior_runs)`` where
+    first/last bound the lit content and interior_runs are ``(start, end)``
+    inclusive frame ranges of darkness *inside* that content."""
+    dark = [max(frame) == 0 for frame in reader.iter_frames()]
+    lit = [i for i, is_dark in enumerate(dark) if not is_dark]
+    if not lit:
+        return 0, -1, []
+
+    first, last = lit[0], lit[-1]
+    runs, run_start = [], None
+    for i in range(first, last + 1):
+        if dark[i] and run_start is None:
+            run_start = i
+        elif not dark[i] and run_start is not None:
+            runs.append((run_start, i - 1))
+            run_start = None
+    return first, last, runs
+
+
 def render_timeline(
     placements: List[ClipPlacement],
     clip_paths: Dict[str, Union[str, Path]],
     channel_count: int,
     step_ms: int,
     output_path: Union[str, Path],
-) -> FSEQInfo:
+    loop_crossfade_ms: int = 0,
+) -> ExportResult:
     """Render a timeline of clip placements to a single output FSEQ file.
 
     clip_paths maps clip_id -> path to that clip's recorded FSEQ file.
+
+    The result is built to loop: leading/trailing blackout frames are dropped
+    (a clip dropped by mouse rarely lands exactly on 0, and that dead air is
+    what makes a rig blink when the player wraps), and with
+    ``loop_crossfade_ms`` > 0 the mix's tail is dissolved back over its head so
+    the wrap itself is seamless. See ExportReport.
     """
+    # Render the full timeline to a temp file first: trimming the head and
+    # dissolving the tail over the head both need random access to the
+    # finished mix, and the mix is too large to hold in memory.
+    output_path = Path(output_path)
+    temp_path = output_path.with_name(output_path.name + ".rendering")
+
     readers: Dict[str, FSEQReader] = {}
     try:
         for placement in placements:
@@ -242,7 +305,7 @@ def render_timeline(
         windows, total_duration_ms = _compute_windows(placements, readers)
         total_frames = max(1, math.ceil(total_duration_ms / step_ms)) if total_duration_ms > 0 else 0
 
-        writer = FSEQWriter(output_path, channel_count=channel_count, step_ms=step_ms)
+        writer = FSEQWriter(temp_path, channel_count=channel_count, step_ms=step_ms)
         try:
             for frame_idx in range(total_frames):
                 t_ms = frame_idx * step_ms
@@ -250,17 +313,56 @@ def render_timeline(
                 writer.write_frame(merged.tobytes())
         finally:
             writer.close()
-
-        return FSEQInfo(
-            path=str(output_path),
-            channel_count=channel_count,
-            frame_count=total_frames,
-            step_ms=step_ms,
-            duration_seconds=(total_frames * step_ms) / 1000.0,
-        )
     finally:
         for reader in readers.values():
             reader.close()
+
+    try:
+        return _finalize_export(temp_path, output_path, step_ms, loop_crossfade_ms)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def _finalize_export(
+    temp_path: Path, output_path: Path, step_ms: int, loop_crossfade_ms: int
+) -> ExportResult:
+    """Trim the rendered mix to its lit content, optionally dissolve its tail
+    back over its head, and write the finished file."""
+    report = ExportReport()
+    reader = FSEQReader(temp_path)
+    try:
+        first, last, runs = _scan_blackouts(reader)
+        report.lead_trimmed_ms = first * step_ms
+        report.tail_trimmed_ms = max(0, reader.frame_count - 1 - last) * step_ms
+        report.blackout_gaps = [(a * step_ms, (b + 1) * step_ms) for a, b in runs]
+
+        source = ClipView(reader, first, max(0, last - first + 1))
+        writer = FSEQWriter(
+            output_path, channel_count=reader.channel_count, step_ms=reader.step_ms
+        )
+        try:
+            if loop_crossfade_ms > 0 and source.frame_count >= 2:
+                frame_count = write_crossfade_loop(source, writer, loop_crossfade_ms)
+                report.loop_crossfade_ms = loop_crossfade_ms
+            else:
+                for i in range(source.frame_count):
+                    writer.write_frame(source.read_frame(i))
+                frame_count = source.frame_count
+        finally:
+            writer.close()
+
+        return ExportResult(
+            info=FSEQInfo(
+                path=str(output_path),
+                channel_count=reader.channel_count,
+                frame_count=frame_count,
+                step_ms=step_ms,
+                duration_seconds=(frame_count * step_ms) / 1000.0,
+            ),
+            report=report,
+        )
+    finally:
+        reader.close()
 
 
 def render_frame_at(

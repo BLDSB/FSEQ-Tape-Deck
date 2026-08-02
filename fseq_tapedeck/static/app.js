@@ -781,14 +781,19 @@ function updateHeaderRecordIndicator(status) {
   indicator.classList.toggle("hidden", !status.recording);
   if (status.recording) {
     const seconds = (status.elapsed_ms / 1000).toFixed(1);
-    document.getElementById("record-indicator-text").textContent =
-      `Recording "${status.clip_name}" – ${status.frame_count}f / ${seconds}s`;
+    document.getElementById("record-indicator-text").textContent = status.waiting_for_data
+      ? `Armed "${status.clip_name}" – waiting for DMX…`
+      : `Recording "${status.clip_name}" – ${status.frame_count}f / ${seconds}s`;
   }
 }
 
 function updateModalLiveStats(status) {
   document.getElementById("recording-frame-count").textContent = status.frame_count;
   document.getElementById("recording-elapsed").textContent = (status.elapsed_ms / 1000).toFixed(1);
+  // The first frame is held back until real DMX arrives, so a clip never opens
+  // on a blackout (which would blink the rig every time the loop wraps).
+  document.getElementById("recording-waiting").classList.toggle("hidden", !status.waiting_for_data);
+  document.getElementById("recording-live-stats").classList.toggle("hidden", !!status.waiting_for_data);
 }
 
 function startStatusPolling() {
@@ -961,8 +966,55 @@ function initExportDirControls() {
   });
 }
 
+// The exporter drops blackout frames from the head/tail of the mix and can
+// dissolve its tail back over its head; say what it did rather than silently
+// changing the show's length. Interior gaps it can't close without shifting
+// the timing, so those are surfaced as a warning.
+function reportExportResult(exp) {
+  const notes = [];
+  if (exp.lead_trimmed_ms > 0) {
+    notes.push(`trimmed ${(exp.lead_trimmed_ms / 1000).toFixed(2)}s of blackout from the start`);
+  }
+  if (exp.tail_trimmed_ms > 0) {
+    notes.push(`trimmed ${(exp.tail_trimmed_ms / 1000).toFixed(2)}s of blackout from the end`);
+  }
+  if (exp.loop_crossfade_ms > 0) {
+    notes.push(`crossfaded the wrap over ${(exp.loop_crossfade_ms / 1000).toFixed(1)}s`);
+  }
+
+  const gaps = exp.blackout_gaps || [];
+  // Nothing was changed and nothing is wrong -- the exports list already shows
+  // the result, so don't interrupt with a dialog that says so.
+  if (notes.length === 0 && gaps.length === 0) return;
+
+  let message = `Exported "${exp.name}" (${exp.duration_seconds.toFixed(1)}s).`;
+  if (notes.length > 0) {
+    message += `\n\nTo make it loop cleanly, the export ${notes.join(", ")}.`;
+  }
+  if (gaps.length > 0) {
+    const list = gaps
+      .slice(0, 5)
+      .map(([a, b]) => `  ${(a / 1000).toFixed(2)}s – ${(b / 1000).toFixed(2)}s`)
+      .join("\n");
+    const more = gaps.length > 5 ? `\n  …and ${gaps.length - 5} more` : "";
+    message +=
+      `\n\nHeads up: the mix goes fully dark between clips here, which will ` +
+      `read as a blink during playback:\n${list}${more}\n\n` +
+      `Close those gaps on the timeline to fix it.`;
+  }
+  alert(message);
+}
+
 function initExportPanel() {
   initExportDirControls();
+
+  const seamless = document.getElementById("export-seamless-loop");
+  const syncSeamlessUI = () => {
+    document.getElementById("export-loop-crossfade-row").classList.toggle("hidden", !seamless.checked);
+    document.getElementById("export-loop-hint").classList.toggle("hidden", !seamless.checked);
+  };
+  seamless.addEventListener("change", syncSeamlessUI);
+  syncSeamlessUI();
 
   document.getElementById("btn-export").addEventListener("click", () => {
     document.getElementById("export-name").value = "";
@@ -986,10 +1038,26 @@ function initExportPanel() {
     const channelCount = Number(document.getElementById("export-channel-count").value);
     const stepMs = Number(document.getElementById("export-step-ms").value);
 
+    let loopCrossfadeMs = 0;
+    if (document.getElementById("export-seamless-loop").checked) {
+      loopCrossfadeMs = Number(document.getElementById("export-loop-crossfade-ms").value);
+      if (!Number.isFinite(loopCrossfadeMs) || loopCrossfadeMs <= 0) {
+        errEl.textContent = "Loop crossfade must be a positive number of milliseconds.";
+        errEl.classList.remove("hidden");
+        return;
+      }
+    }
+
     try {
-      await api.post("/api/timeline/export", { name, channel_count: channelCount, step_ms: stepMs });
+      const exp = await api.post("/api/timeline/export", {
+        name,
+        channel_count: channelCount,
+        step_ms: stepMs,
+        loop_crossfade_ms: loopCrossfadeMs,
+      });
       document.getElementById("export-modal").classList.add("hidden");
       await refreshExports();
+      reportExportResult(exp);
     } catch (err) {
       errEl.textContent = err.message;
       errEl.classList.remove("hidden");

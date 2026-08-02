@@ -195,6 +195,52 @@ def test_recorder_end_to_end_with_fake_source():
     print("OK: Recorder end-to-end record/stop produced a valid, verifiable FSEQ clip")
 
 
+def test_recording_never_opens_on_a_blackout():
+    """Regression: a clip must not start with black frames.
+
+    A listener needs time to bind its socket and join multicast -- up to about
+    a second. Recording through that startup captured the buffer's initial
+    zeros, so every clip opened with a blackout, and the whole rig blinked each
+    time the finished sequence wrapped around. The recorder now holds the first
+    frame until real DMX arrives.
+    """
+
+    async def run():
+        # A source that is already lit and streaming before recording starts.
+        sender = sacn.sACNsender(source_name="fseq-tapedeck-blackout-test")
+        sender.start()
+        sender.activate_output(11)
+        sender[11].destination = "127.0.0.1"
+        sender[11].dmx_data = tuple([200] * 512)
+        time.sleep(1.0)
+
+        recorder = Recorder(clips_dir=Path("_test_clips_tmp4"))
+        await recorder.start(
+            name="blackout-test", universes=[11], step_ms=40,
+            protocol="sacn", bind_address="127.0.0.1",
+        )
+        try:
+            await asyncio.sleep(2.0)
+        finally:
+            metadata = await recorder.stop()
+            sender.stop()
+
+        reader = FSEQReader(recorder.clips_dir / f"{metadata.clip_id}.fseq")
+        try:
+            assert reader.frame_count > 0, "nothing was recorded from a live source"
+            dark = [i for i in range(reader.frame_count) if max(reader.read_frame(i)) == 0]
+            assert not dark, f"clip contains {len(dark)} black frame(s) at {dark[:10]}"
+        finally:
+            reader.close()
+
+        (recorder.clips_dir / f"{metadata.clip_id}.fseq").unlink()
+        (recorder.clips_dir / f"{metadata.clip_id}.json").unlink()
+        recorder.clips_dir.rmdir()
+
+    asyncio.run(run())
+    print("OK: recording holds the first frame until DMX arrives (no blackout head)")
+
+
 def test_current_frame_reflects_live_buffer():
     """current_frame() is what powers the recording-preview meter in the UI --
     it must reflect the buffer immediately, not just on a write tick, and must
@@ -233,5 +279,6 @@ if __name__ == "__main__":
     test_list_local_ipv4_addresses_excludes_loopback_and_link_local()
     test_recorder_honors_explicit_bind_address()
     test_recorder_end_to_end_with_fake_source()
+    test_recording_never_opens_on_a_blackout()
     test_current_frame_reflects_live_buffer()
     print("\nAll recorder tests passed.")

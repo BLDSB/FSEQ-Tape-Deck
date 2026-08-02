@@ -24,7 +24,7 @@ Offset  Size   Field
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Iterator, Optional, Union
+from typing import BinaryIO, Iterator, Optional, Tuple, Union
 
 MAGIC = b"PSEQ"
 HEADER_LENGTH = 32
@@ -114,6 +114,24 @@ class FSEQWriter:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
+
+
+def content_frame_range(reader: "FSEQReader") -> Tuple[int, int]:
+    """``(first, last)`` inclusive frame indices of a sequence's lit content,
+    i.e. with leading and trailing all-zero frames excluded. ``(0, -1)`` if
+    every frame is dark.
+
+    A dark frame at either end of a sequence is invisible on a single play but
+    makes the whole rig blink every time a player wraps around and restarts,
+    so anything built to loop trims to this range first.
+    """
+    first, last = -1, -1
+    for i, frame in enumerate(reader.iter_frames()):
+        if max(frame) != 0:
+            if first < 0:
+                first = i
+            last = i
+    return (0, -1) if first < 0 else (first, last)
 
 
 class FSEQReader:

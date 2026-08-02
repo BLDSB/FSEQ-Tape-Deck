@@ -90,6 +90,18 @@
           <option value="50">50 ms (20 fps)</option>
         </select>
       </label>
+      <label class="checkbox-label">
+        <input type="checkbox" id="export-seamless-loop">
+        Seamless loop (for FPP)
+      </label>
+      <label id="export-loop-crossfade-row">
+        Loop crossfade
+        <input type="number" id="export-loop-crossfade-ms" value="1000" min="1" step="100">
+      </label>
+      <p class="field-hint" id="export-loop-hint">
+        Dissolves the end of the mix back over its start, so the player wraps
+        with no visible jump. Shortens the show by the crossfade length.
+      </p>
       <label>
         Save exports to
         <input type="text" id="export-dir-path" placeholder="Default (exports/)">
@@ -152,9 +164,12 @@
 
     <div id="recording-live" class="recording-live hidden">
       <div class="recording-live-row">
-        <div class="recording-live-stats">
+        <div class="recording-live-stats" id="recording-live-stats">
           <span id="recording-frame-count">0</span> frames &middot;
           <span id="recording-elapsed">0.0</span>s
+        </div>
+        <div class="recording-waiting hidden" id="recording-waiting">
+          Waiting for DMX&hellip;
         </div>
         <button id="btn-stop-record" class="btn btn-danger">Stop</button>
       </div>

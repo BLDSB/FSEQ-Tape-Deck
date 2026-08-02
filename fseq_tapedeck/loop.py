@@ -16,6 +16,10 @@ Two loop styles, both jump-free at the seam, each producing a brand-new clip
   the first ``crossfade_ms`` with a smoothstep weight so the wrap is seamless.
   It costs a little content (the loop is ``N - crossfade_frames`` long) and
   blends the start and end together, but never reverses direction.
+
+Both modes ignore any blackout frames at the head or tail of the source first
+(see ``fseq.content_frame_range``) -- a dark frame at either end makes the rig
+blink at the wrap no matter how smooth the loop mode itself is.
 """
 
 import json
@@ -27,7 +31,7 @@ from typing import List, Union
 import numpy as np
 
 from clip_store import ClipStore
-from fseq import FSEQReader, FSEQWriter
+from fseq import FSEQReader, FSEQWriter, content_frame_range
 
 LOOP_MODES = ("pingpong", "crossfade")
 
@@ -37,6 +41,31 @@ def _smoothstep(u: float) -> float:
     at either end of the blend (same weighting mixer.py uses for dissolves)."""
     u = max(0.0, min(1.0, u))
     return u * u * (3.0 - 2.0 * u)
+
+
+class ClipView:
+    """A read-only view of a frame range within a sequence, indexed from 0.
+
+    Lets the loop writers work in trimmed frame numbers without knowing the
+    offset, and lets the timeline exporter reuse them over a rendered mix.
+    """
+
+    def __init__(self, reader: FSEQReader, first: int, frame_count: int):
+        self._reader = reader
+        self._first = first
+        self.frame_count = frame_count
+        self.step_ms = reader.step_ms
+
+    def read_frame(self, i: int) -> bytes:
+        return self._reader.read_frame(self._first + i)
+
+    @classmethod
+    def of_lit_content(cls, reader: FSEQReader) -> "ClipView":
+        """A view of just the lit frames, with any blackout at the head or tail
+        dropped -- those blink the rig at every wrap. Empty if all frames are
+        dark."""
+        first, last = content_frame_range(reader)
+        return cls(reader, first, max(0, last - first + 1))
 
 
 def pingpong_indices(frame_count: int) -> List[int]:
@@ -50,18 +79,21 @@ def pingpong_indices(frame_count: int) -> List[int]:
     return list(range(frame_count)) + list(range(frame_count - 2, 0, -1))
 
 
-def _write_pingpong(reader: FSEQReader, writer: FSEQWriter) -> int:
-    indices = pingpong_indices(reader.frame_count)
+def write_pingpong_loop(source: ClipView, writer: FSEQWriter) -> int:
+    indices = pingpong_indices(source.frame_count)
     for i in indices:
-        writer.write_frame(reader.read_frame(i))
+        writer.write_frame(source.read_frame(i))
     return len(indices)
 
 
-def _write_crossfade(reader: FSEQReader, writer: FSEQWriter, crossfade_ms: int) -> int:
+def write_crossfade_loop(source: ClipView, writer: FSEQWriter, crossfade_ms: int) -> int:
     """Dissolve the tail back over the head so the loop wraps seamlessly with
-    forward-only motion. See module docstring for the tradeoffs."""
-    n = reader.frame_count
-    step_ms = reader.step_ms
+    forward-only motion. See module docstring for the tradeoffs.
+
+    Also used by the timeline exporter to make a finished mix wrap cleanly.
+    """
+    n = source.frame_count
+    step_ms = source.step_ms
     if n < 2:
         raise ValueError("clip is too short to build a crossfade loop")
     if crossfade_ms <= 0:
@@ -77,13 +109,13 @@ def _write_crossfade(reader: FSEQReader, writer: FSEQWriter, crossfade_ms: int) 
         if i < cf:
             # Blend the head frame i with the overlapped tail frame that wraps
             # onto it; weight ramps 0->1 so the tail hands off to the head.
-            head = np.frombuffer(reader.read_frame(i), dtype=np.uint8).astype(np.float64)
-            tail = np.frombuffer(reader.read_frame(i + loop_len), dtype=np.uint8).astype(np.float64)
+            head = np.frombuffer(source.read_frame(i), dtype=np.uint8).astype(np.float64)
+            tail = np.frombuffer(source.read_frame(i + loop_len), dtype=np.uint8).astype(np.float64)
             w = _smoothstep((i + 1) / cf)
             blended = np.clip(np.round(tail * (1.0 - w) + head * w), 0, 255).astype(np.uint8)
             writer.write_frame(blended.tobytes())
         else:
-            writer.write_frame(reader.read_frame(i))
+            writer.write_frame(source.read_frame(i))
     return loop_len
 
 
@@ -105,13 +137,20 @@ def render_loop(
     try:
         if reader.frame_count <= 0:
             raise ValueError("cannot loop an empty clip")
+
+        # Drop any blackout frames at the head/tail before looping -- they are
+        # what makes a rig blink at the wrap.
+        source = ClipView.of_lit_content(reader)
+        if source.frame_count == 0:
+            raise ValueError("this clip is dark in every frame, so there is nothing to loop")
+
         writer = FSEQWriter(
             output_path, channel_count=reader.channel_count, step_ms=reader.step_ms
         )
         try:
             if mode == "pingpong":
-                return _write_pingpong(reader, writer)
-            return _write_crossfade(reader, writer, crossfade_ms)
+                return write_pingpong_loop(source, writer)
+            return write_crossfade_loop(source, writer, crossfade_ms)
         finally:
             writer.close()
     finally:

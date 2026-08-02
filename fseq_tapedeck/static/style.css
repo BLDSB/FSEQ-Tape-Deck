@@ -450,6 +450,14 @@ body {
   font-size: 11px;
 }
 
+/* A checkbox reads as a row, not the stacked label/field of the forms above. */
+.transport-form label.checkbox-label,
+.modal label.checkbox-label {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
 .export-dir-actions {
   display: flex;
   gap: 8px;
@@ -615,6 +623,13 @@ input[type="text"], input[type="number"], select {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+/* Armed, but holding the first frame back until DMX actually arrives, so the
+   clip never opens on a blackout. */
+.recording-waiting {
+  color: var(--text-dim);
+  font-style: italic;
 }
 
 .record-channel-meter {

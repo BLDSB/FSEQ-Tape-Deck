@@ -5,7 +5,7 @@ from typing import List, Literal, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from recorder import list_local_ipv4_addresses
+from recorder import NoDataRecordedError, list_local_ipv4_addresses
 
 router = APIRouter(prefix="/api/record", tags=["recorder"])
 
@@ -52,7 +52,10 @@ async def stop_recording(request: Request):
     recorder = request.app.state.recorder
     if not recorder.is_recording:
         raise HTTPException(status_code=409, detail="no recording is in progress")
-    metadata = await recorder.stop()
+    try:
+        metadata = await recorder.stop()
+    except NoDataRecordedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return metadata.to_dict()
 
 

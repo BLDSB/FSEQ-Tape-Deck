@@ -50,6 +50,10 @@ def test_full_api_flow():
             )
             assert dup.status_code == 409
 
+            # The recorder holds its first frame until DMX actually arrives (so
+            # clips never open on a blackout); feed the buffer directly to stand
+            # in for a live console.
+            app.state.recorder._buffer.update(1, bytes([128] * 512))
             time.sleep(0.2)  # let a handful of frames get written
 
             status = client.get("/api/record/status").json()

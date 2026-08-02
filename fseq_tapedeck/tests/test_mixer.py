@@ -58,13 +58,21 @@ def test_htp_crossfade_render():
         placement_b = ClipPlacement(clip_id="b", start_ms=8000, fade_in_ms=1000, fade_out_ms=0)
 
         output_path = tmp / "out.fseq"
-        info = render_timeline(
+        result = render_timeline(
             placements=[placement_a, placement_b],
             clip_paths={"a": clip_a_path, "b": clip_b_path},
             channel_count=channel_count,
             step_ms=step_ms,
             output_path=output_path,
         )
+        info = result.info
+
+        # Both clips are lit end to end and butt up against 0, so the exporter's
+        # loop-safety trim has nothing to remove and frame indices still map
+        # straight onto timeline time.
+        assert result.report.lead_trimmed_ms == 0
+        assert result.report.tail_trimmed_ms == 0
+        assert result.report.blackout_gaps == []
 
         assert info.channel_count == channel_count
         # Output spans 18s total (b ends at 8s+10s=18s), a ends at 10s.
@@ -213,13 +221,15 @@ def test_render_frame_at_matches_render_timeline():
         clip_paths = {"a": clip_a_path, "b": clip_b_path}
 
         output_path = tmp / "out.fseq"
-        render_timeline(
+        result = render_timeline(
             placements=placements,
             clip_paths=clip_paths,
             channel_count=channel_count,
             step_ms=step_ms,
             output_path=output_path,
         )
+        # Frame index -> timeline time only holds while nothing was trimmed.
+        assert result.report.lead_trimmed_ms == 0
 
         reader = FSEQReader(output_path)
         try:
@@ -232,6 +242,86 @@ def test_render_frame_at_matches_render_timeline():
             reader.close()
 
     print("OK: render_frame_at agrees with render_timeline's per-frame output")
+
+
+def _peaks(path: Path):
+    reader = FSEQReader(path)
+    try:
+        return [max(reader.read_frame(i)) for i in range(reader.frame_count)]
+    finally:
+        reader.close()
+
+
+def _wrap_jump(path: Path) -> int:
+    """Biggest per-channel change from the last frame back to the first -- what
+    a player shows at the instant it restarts the file."""
+    reader = FSEQReader(path)
+    try:
+        last = reader.read_frame(reader.frame_count - 1)
+        first = reader.read_frame(0)
+        return max(abs(a - b) for a, b in zip(last, first))
+    finally:
+        reader.close()
+
+
+def test_export_is_loop_safe():
+    """Regression: an exported mix must not begin or end on a blackout.
+
+    A clip dragged onto the timeline lands wherever the mouse was, so its
+    start_ms is rarely exactly 0. That dead air used to render as black frames
+    at the head of the file -- invisible on a single play, but every light in
+    the rig blinks when FPP wraps around and restarts.
+    """
+    channel_count, step_ms = 512, 25
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        clip = tmp / "a.fseq"
+        # Lit in every frame, so any darkness in the export came from the
+        # timeline, never from the clip's own content.
+        with FSEQWriter(clip, channel_count=channel_count, step_ms=40) as writer:
+            for i in range(100):
+                writer.write_frame(bytes([60 + (i * 2) % 180] * channel_count))
+        clip_paths = {"a": clip}
+
+        # The reported show: the same clip at the start and at the end, dropped
+        # by mouse so the first one starts a few ms after zero.
+        placements = [
+            ClipPlacement(clip_id="a", start_ms=37),
+            ClipPlacement(clip_id="a", start_ms=4037),
+        ]
+
+        plain = tmp / "plain.fseq"
+        result = render_timeline(placements, clip_paths, channel_count, step_ms, plain)
+        assert 0 not in _peaks(plain), "export still opens/closes on a blackout"
+        assert result.report.lead_trimmed_ms == 50, result.report
+        assert result.report.blackout_gaps == []
+        assert result.report.is_loop_safe
+
+        # Seamless loop: the tail dissolves back over the head, so the wrap
+        # itself is invisible rather than merely non-black.
+        looped = tmp / "looped.fseq"
+        looped_result = render_timeline(
+            placements, clip_paths, channel_count, step_ms, looped, loop_crossfade_ms=1000
+        )
+        assert 0 not in _peaks(looped)
+        assert looped_result.report.loop_crossfade_ms == 1000
+        assert looped_result.info.frame_count < result.info.frame_count  # crossfade costs length
+        assert _wrap_jump(looped) < _wrap_jump(plain), "crossfade did not smooth the wrap"
+
+        # A gap *between* clips can't be closed without shifting the show's
+        # timing, so it must be reported rather than silently removed.
+        gapped = tmp / "gapped.fseq"
+        gap_result = render_timeline(
+            [ClipPlacement(clip_id="a", start_ms=37),
+             ClipPlacement(clip_id="a", start_ms=4337)],
+            clip_paths, channel_count, step_ms, gapped,
+        )
+        assert gap_result.report.blackout_gaps == [(4050, 4350)], gap_result.report
+        assert not gap_result.report.is_loop_safe
+        assert 0 in _peaks(gapped)  # the interior gap is still there, as rendered
+
+    print("OK: exports trim head/tail blackout, can seal the wrap, and flag interior gaps")
 
 
 def test_timeline_persistence(tmp_path=None):
@@ -268,5 +358,6 @@ if __name__ == "__main__":
     test_crossfade_dissolve_has_no_htp_dip()
     test_crossfade_dissolve_is_smooth_and_monotonic()
     test_render_frame_at_matches_render_timeline()
+    test_export_is_loop_safe()
     test_timeline_persistence()
     print("\nAll mixer tests passed.")

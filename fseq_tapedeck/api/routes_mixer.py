@@ -70,6 +70,9 @@ class ExportRequest(BaseModel):
     name: str
     channel_count: int
     step_ms: int
+    # > 0 dissolves the finished mix's tail back over its head so a player that
+    # restarts the file (FPP) wraps with no visible jump.
+    loop_crossfade_ms: int = 0
 
 
 class PlaybackStartRequest(BaseModel):
@@ -304,13 +307,15 @@ async def export_timeline(body: ExportRequest, request: Request):
     clip_paths = _resolve_clip_paths(timeline.placements, clip_store)
 
     output_path = exports_dir / f"{body.name}.fseq"
-    info = render_timeline(
+    result = render_timeline(
         placements=timeline.placements,
         clip_paths=clip_paths,
         channel_count=body.channel_count,
         step_ms=body.step_ms,
         output_path=output_path,
+        loop_crossfade_ms=body.loop_crossfade_ms,
     )
+    info, report = result.info, result.report
 
     timeline.settings["channel_count"] = body.channel_count
     timeline.settings["step_ms"] = body.step_ms
@@ -324,6 +329,12 @@ async def export_timeline(body: ExportRequest, request: Request):
         "step_ms": info.step_ms,
         "duration_seconds": info.duration_seconds,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        # What the exporter did to make the file loop cleanly, so the UI can
+        # say so rather than silently changing the show's length.
+        "lead_trimmed_ms": report.lead_trimmed_ms,
+        "tail_trimmed_ms": report.tail_trimmed_ms,
+        "loop_crossfade_ms": report.loop_crossfade_ms,
+        "blackout_gaps": [list(g) for g in report.blackout_gaps],
     }
     (exports_dir / f"{body.name}.json").write_text(json.dumps(export_meta, indent=2))
     return export_meta
