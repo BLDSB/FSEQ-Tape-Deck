@@ -151,8 +151,46 @@ def test_full_api_flow():
                 p["crossfade_ms"] == clip_dur for p in client.get("/api/timeline").json()["placements"]
             )
 
-            # Clean up so the export section below sees a single placement again.
             assert client.delete(f"/api/timeline/placements/{second_id}").status_code == 200
+
+            # --- Crossfade every transition at once ---
+            # Reset the survivor, then lay two more clips out with gaps between.
+            client.put(
+                f"/api/timeline/placements/{placement_id}",
+                json={"start_ms": 0, "fade_in_ms": 0, "crossfade_ms": 0},
+            )
+            ids = [placement_id]
+            for i in (1, 2):
+                ids.append(
+                    client.post(
+                        "/api/timeline/placements",
+                        json={"clip_id": clip_id, "start_ms": (clip_dur + 3000) * i},
+                    ).json()["placement_id"]
+                )
+
+            xf = max(1, clip_dur // 4)
+            res = client.post("/api/timeline/crossfade-all", json={"duration_ms": xf})
+            assert res.status_code == 200, res.text
+            summary = res.json()
+            assert summary["applied"] == 2
+            assert summary["skipped"] == 0
+            assert summary["shortest_ms"] == xf
+
+            by_id = {p["placement_id"]: p for p in client.get("/api/timeline").json()["placements"]}
+            for prev_id, next_id in zip(ids, ids[1:]):
+                # Each clip sits on the tail of the one before it -- gaps closed.
+                assert by_id[next_id]["start_ms"] == by_id[prev_id]["start_ms"] + clip_dur - xf
+                assert by_id[next_id]["crossfade_ms"] == xf
+                assert by_id[next_id]["fade_in_ms"] == 0
+                assert by_id[prev_id]["fade_out_ms"] == 0
+
+            assert client.post("/api/timeline/crossfade-all", json={"duration_ms": 0}).status_code == 400
+
+            # Clean up so the export section below sees a single placement again.
+            for extra in ids[1:]:
+                assert client.delete(f"/api/timeline/placements/{extra}").status_code == 200
+            # One clip on its own has no transition to crossfade.
+            assert client.post("/api/timeline/crossfade-all", json={"duration_ms": xf}).status_code == 400
 
             # --- Live frame preview (used for playback/scrubbing) ---
             frame = client.get(
@@ -280,8 +318,22 @@ def test_full_api_flow():
             names = [e["name"] for e in client.get("/api/timeline/exports").json()]
             assert "export-1" in names
 
+            # --- Clear the whole timeline (leaving clips and settings alone) ---
+            extra = client.post(
+                "/api/timeline/placements", json={"clip_id": clip_id, "start_ms": 1000}
+            )
+            assert extra.status_code == 200, extra.text
+            cleared = client.delete("/api/timeline/placements")
+            assert cleared.status_code == 200, cleared.text
+            assert cleared.json()["deleted"] == 2
+            after = client.get("/api/timeline").json()
+            assert after["placements"] == []
+            assert after["settings"]  # settings (export dir, name, ...) survive
+            assert any(c["clip_id"] == clip_id for c in client.get("/api/clips").json())
+            # Clearing an already-empty timeline is a no-op, not an error.
+            assert client.delete("/api/timeline/placements").json()["deleted"] == 0
+
             # --- Cleanup via API ---
-            assert client.delete(f"/api/timeline/placements/{placement_id}").status_code == 200
             assert client.delete(f"/api/timeline/placements/{placement_id}").status_code == 404
 
             assert client.delete(f"/api/clips/{clip_id}").status_code == 200

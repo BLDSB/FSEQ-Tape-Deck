@@ -546,6 +546,32 @@ input[type="text"], input[type="number"], select {
   gap: 4px;
 }
 
+.timeline-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Destructive, but sits in a header next to everyday controls -- outlined
+   rather than solid so it doesn't shout for attention. */
+#btn-clear-timeline {
+  background: transparent;
+  border-color: var(--danger);
+  color: var(--danger);
+  font-weight: 600;
+}
+
+#btn-clear-timeline:hover:not(:disabled) {
+  background: var(--danger);
+  color: #1a0b0b;
+}
+
+#btn-clear-timeline:disabled {
+  border-color: var(--border);
+  color: var(--text-dim);
+  opacity: 0.6;
+}
+
 /* Modals */
 .modal-overlay {
   position: fixed;

@@ -40,9 +40,13 @@
   <section class="panel timeline-panel">
     <div class="panel-header">
       <h2>Timeline</h2>
-      <div class="timeline-zoom">
-        <button id="btn-zoom-out" class="btn btn-small">&minus;</button>
-        <button id="btn-zoom-in" class="btn btn-small">+</button>
+      <div class="timeline-header-actions">
+        <button id="btn-crossfade-all" class="btn btn-small">Crossfade All…</button>
+        <button id="btn-clear-timeline" class="btn btn-small">Clear Timeline</button>
+        <div class="timeline-zoom">
+          <button id="btn-zoom-out" class="btn btn-small">&minus;</button>
+          <button id="btn-zoom-in" class="btn btn-small">+</button>
+        </div>
       </div>
     </div>
     <div class="timeline-scroll" id="timeline-scroll">
@@ -286,6 +290,29 @@
     <div class="modal-actions">
       <button id="btn-cancel-crossfade" class="btn">Cancel</button>
       <button id="btn-apply-crossfade" class="btn btn-primary">Crossfade</button>
+    </div>
+  </div>
+</div>
+
+<!-- Crossfade all modal -->
+<div id="crossfade-all-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <h2>Crossfade All Clips</h2>
+    <p class="crossfade-desc">
+      Dissolves every clip on the timeline into the one after it, using the same
+      length for each transition. Clips are pulled together so the show plays as
+      one continuous run &mdash; <strong>any gaps between clips are closed</strong>
+      and the timeline gets shorter.
+    </p>
+    <label>
+      Crossfade length (ms)
+      <input type="number" id="crossfade-all-duration-ms" min="1" step="1" value="1000">
+    </label>
+    <p class="field-hint" id="crossfade-all-summary"></p>
+    <div class="modal-error hidden" id="crossfade-all-modal-error"></div>
+    <div class="modal-actions">
+      <button id="btn-cancel-crossfade-all" class="btn">Cancel</button>
+      <button id="btn-apply-crossfade-all" class="btn btn-primary">Crossfade all</button>
     </div>
   </div>
 </div>

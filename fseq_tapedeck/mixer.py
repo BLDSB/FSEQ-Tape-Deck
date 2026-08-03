@@ -95,6 +95,14 @@ class Timeline:
         self.settings.pop("project_name", None)
         self.save()
 
+    def clear_placements(self) -> int:
+        """Empty the timeline but keep the project (its name, settings, and the
+        clip library) intact. Returns how many placements were removed."""
+        removed = len(self.placements)
+        self.placements = []
+        self.save()
+        return removed
+
     def _find(self, placement_id: str) -> ClipPlacement:
         for p in self.placements:
             if p.placement_id == placement_id:

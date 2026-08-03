@@ -265,6 +265,12 @@ function renderTimeline() {
   }
 
   setPlayheadVisual(state.playheadMs);
+
+  // Nothing to clear on an empty timeline, and nothing to crossfade until
+  // there are two clips to dissolve between.
+  const count = state.timeline.placements.length;
+  document.getElementById("btn-clear-timeline").disabled = count === 0;
+  document.getElementById("btn-crossfade-all").disabled = count < 2;
 }
 
 function buildClipBlock(placement) {
@@ -585,6 +591,90 @@ function initCrossfadeModal() {
     } catch (err) {
       errEl.textContent = err.message;
       errEl.classList.remove("hidden");
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Crossfade all
+// ---------------------------------------------------------------------------
+
+function orderedPlacements() {
+  return [...state.timeline.placements].sort(
+    (a, b) => a.start_ms - b.start_ms || a.placement_id.localeCompare(b.placement_id)
+  );
+}
+
+// Longest dissolve every transition can take: no pair can overlap by more than
+// its shorter clip plays.
+function maxCrossfadeAllMs() {
+  const ordered = orderedPlacements();
+  let max = Infinity;
+  for (let i = 0; i < ordered.length - 1; i++) {
+    max = Math.min(
+      max,
+      placementDurationMs(ordered[i]),
+      placementDurationMs(ordered[i + 1])
+    );
+  }
+  return Number.isFinite(max) ? max : 0;
+}
+
+function openCrossfadeAllModal() {
+  const count = state.timeline.placements.length;
+  if (count < 2) return;
+  const input = document.getElementById("crossfade-all-duration-ms");
+  const maxLen = Math.max(1, maxCrossfadeAllMs());
+  input.value = String(Math.min(1000, maxLen));
+  document.getElementById("crossfade-all-summary").textContent =
+    `${count - 1} transition${count - 1 === 1 ? "" : "s"} will be crossfaded. ` +
+    `Anything longer than ${(maxLen / 1000).toFixed(1)}s is shortened to fit the clips.`;
+  document.getElementById("crossfade-all-modal-error").classList.add("hidden");
+  document.getElementById("crossfade-all-modal").classList.remove("hidden");
+}
+
+function initCrossfadeAllModal() {
+  document.getElementById("btn-crossfade-all").addEventListener("click", openCrossfadeAllModal);
+
+  document.getElementById("btn-cancel-crossfade-all").addEventListener("click", () => {
+    document.getElementById("crossfade-all-modal").classList.add("hidden");
+  });
+
+  document.getElementById("btn-apply-crossfade-all").addEventListener("click", async () => {
+    const errEl = document.getElementById("crossfade-all-modal-error");
+    errEl.classList.add("hidden");
+    const duration = Number(document.getElementById("crossfade-all-duration-ms").value);
+    if (!Number.isFinite(duration) || duration <= 0) {
+      errEl.textContent = "Enter a crossfade length greater than 0.";
+      errEl.classList.remove("hidden");
+      return;
+    }
+    const btn = document.getElementById("btn-apply-crossfade-all");
+    btn.disabled = true;
+    try {
+      const res = await api.post("/api/timeline/crossfade-all", {
+        duration_ms: Math.round(duration),
+      });
+      document.getElementById("crossfade-all-modal").classList.add("hidden");
+      await refreshTimeline();
+      // The show just got shorter; don't leave the playhead past the end.
+      const totalMs = timelineTotalMs();
+      if (state.playheadMs > totalMs) {
+        state.playheadMs = totalMs;
+        setPlayheadVisual(totalMs);
+        fetchAndDrawFrame(totalMs);
+      }
+      if (res.skipped > 0) {
+        alert(
+          `Crossfaded ${res.applied} transition(s). ${res.skipped} were skipped ` +
+            `because a clip was too short to dissolve.`
+        );
+      }
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.classList.remove("hidden");
+    } finally {
+      btn.disabled = false;
     }
   });
 }
@@ -1437,6 +1527,39 @@ function initProjectControls() {
 // Zoom
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Clear timeline
+// ---------------------------------------------------------------------------
+
+// Wipes every placement but keeps the clip library and the project name -- the
+// recordings are still there to rebuild with.
+async function clearTimeline() {
+  const count = state.timeline.placements.length;
+  if (count === 0) return;
+  const noun = count === 1 ? "clip" : "clips";
+  if (!confirm(`Clear the timeline? This removes all ${count} placed ${noun}. Your recordings in the clip library are kept.`)) {
+    return;
+  }
+  const btn = document.getElementById("btn-clear-timeline");
+  btn.disabled = true;
+  try {
+    await stopPlayback();
+    await api.del("/api/timeline/placements");
+    state.playheadMs = 0;
+    await refreshTimeline();
+    fetchAndDrawFrame(0);
+    if (state.consoleOutputActive) await holdConsoleAt(0);
+  } catch (err) {
+    alert(`Could not clear the timeline: ${err.message}`);
+  } finally {
+    btn.disabled = state.timeline.placements.length === 0;
+  }
+}
+
+function initClearTimeline() {
+  document.getElementById("btn-clear-timeline").addEventListener("click", clearTimeline);
+}
+
 function initZoom() {
   document.getElementById("btn-zoom-in").addEventListener("click", () => {
     state.pxPerSec = Math.min(400, Math.round(state.pxPerSec * 1.4));
@@ -1457,11 +1580,13 @@ async function init() {
   initContextMenu();
   initEditModal();
   initCrossfadeModal();
+  initCrossfadeAllModal();
   initLoopModal();
   initRecordModal();
   initExportPanel();
   initScrubber();
   initZoom();
+  initClearTimeline();
   initPlayback();
   initConsoleOutput();
   initProjectControls();

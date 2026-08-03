@@ -66,6 +66,10 @@ class CrossfadeRequest(BaseModel):
     duration_ms: int = 1000
 
 
+class CrossfadeAllRequest(BaseModel):
+    duration_ms: int = 1000
+
+
 class ExportRequest(BaseModel):
     name: str
     channel_count: int
@@ -120,6 +124,13 @@ async def update_placement(placement_id: str, body: UpdatePlacementRequest, requ
     return asdict(placement)
 
 
+@router.delete("/placements")
+async def clear_placements(request: Request):
+    """Remove every placement, leaving the clip library and project untouched."""
+    removed = request.app.state.timeline.clear_placements()
+    return {"deleted": removed}
+
+
 @router.delete("/placements/{placement_id}")
 async def remove_placement(placement_id: str, request: Request):
     timeline = request.app.state.timeline
@@ -135,6 +146,38 @@ def _find_placement(timeline, placement_id: str):
         if placement.placement_id == placement_id:
             return placement
     raise HTTPException(status_code=404, detail=f"no placement with id {placement_id!r}")
+
+
+def _crossfade_pair(timeline, clip_store, outgoing, incoming, requested_ms: int) -> int:
+    """Overlap `incoming` onto the tail of `outgoing` and mark it to dissolve in.
+    The overlap is clamped to whichever clip is shorter; returns the length
+    actually used, or 0 if neither clip is long enough to dissolve at all."""
+    try:
+        out_path = clip_store.get_clip_path(outgoing.clip_id)
+        in_path = clip_store.get_clip_path(incoming.clip_id)
+    except ClipNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    out_dur = placement_duration_ms(outgoing, out_path)
+    in_dur = placement_duration_ms(incoming, in_path)
+
+    # Can't dissolve for longer than either clip actually plays.
+    duration = min(requested_ms, out_dur, in_dur)
+    if duration <= 0:
+        return 0
+
+    # The outgoing clip covers the whole transition and ends exactly as it
+    # finishes, so the incoming clip slides back onto its tail.
+    new_start = max(0, outgoing.start_ms + out_dur - duration)
+
+    timeline.update_placement(
+        incoming.placement_id,
+        start_ms=new_start,
+        fade_in_ms=0,
+        crossfade_ms=duration,
+    )
+    timeline.update_placement(outgoing.placement_id, fade_out_ms=0)
+    return duration
 
 
 @router.post("/crossfade")
@@ -157,36 +200,53 @@ async def auto_crossfade(body: CrossfadeRequest, request: Request):
     # Earlier clip = outgoing, later clip = incoming.
     outgoing, incoming = (pa, pb) if pa.start_ms <= pb.start_ms else (pb, pa)
 
-    try:
-        out_path = clip_store.get_clip_path(outgoing.clip_id)
-        in_path = clip_store.get_clip_path(incoming.clip_id)
-    except ClipNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-
-    out_dur = placement_duration_ms(outgoing, out_path)
-    in_dur = placement_duration_ms(incoming, in_path)
-
-    # Can't dissolve for longer than either clip actually plays.
-    duration = min(body.duration_ms, out_dur, in_dur)
+    duration = _crossfade_pair(timeline, clip_store, outgoing, incoming, body.duration_ms)
     if duration <= 0:
         raise HTTPException(status_code=400, detail="one of the clips is too short to crossfade")
-
-    # Overlap the incoming clip onto the tail of the outgoing one so the
-    # outgoing clip covers the whole transition and ends exactly as it finishes.
-    new_start = max(0, outgoing.start_ms + out_dur - duration)
-
-    timeline.update_placement(
-        incoming.placement_id,
-        start_ms=new_start,
-        fade_in_ms=0,
-        crossfade_ms=duration,
-    )
-    timeline.update_placement(outgoing.placement_id, fade_out_ms=0)
 
     return {
         "outgoing": asdict(_find_placement(timeline, outgoing.placement_id)),
         "incoming": asdict(_find_placement(timeline, incoming.placement_id)),
         "duration_ms": duration,
+    }
+
+
+@router.post("/crossfade-all")
+async def auto_crossfade_all(body: CrossfadeAllRequest, request: Request):
+    """Chain every clip on the timeline into the next with the same dissolve,
+    in start order. Each clip is pulled back onto its predecessor's tail, so the
+    show ends up as one continuous run of crossfades with no gaps or hard cuts."""
+    timeline = request.app.state.timeline
+    clip_store = request.app.state.clip_store
+
+    if body.duration_ms <= 0:
+        raise HTTPException(status_code=400, detail="crossfade length must be positive")
+
+    ordered = sorted(timeline.placements, key=lambda p: (p.start_ms, p.placement_id))
+    if len(ordered) < 2:
+        raise HTTPException(
+            status_code=400, detail="add at least two clips to the timeline to crossfade them"
+        )
+
+    applied = 0
+    skipped = 0
+    shortest = body.duration_ms
+    # Sequential: each pair is arranged against the predecessor's *new* position,
+    # so the whole chain packs together as it goes.
+    for outgoing, incoming in zip(ordered, ordered[1:]):
+        duration = _crossfade_pair(timeline, clip_store, outgoing, incoming, body.duration_ms)
+        if duration <= 0:
+            skipped += 1  # a clip too short to dissolve; leave it where it is
+            continue
+        applied += 1
+        shortest = min(shortest, duration)
+
+    return {
+        "applied": applied,
+        "skipped": skipped,
+        "requested_ms": body.duration_ms,
+        "shortest_ms": shortest if applied else 0,
+        "placements": [asdict(p) for p in timeline.placements],
     }
 
 
